@@ -4,9 +4,10 @@ pynput's X11 backend taps the XRECORD extension, the mechanism the NFSU2 radio
 proved: the key still reaches the focused app, and it fires through a
 fullscreen game's keyboard grab. Windows and macOS have their own backends.
 
-Because keys are not grabbed, a single-key binding would fire while typing
-anywhere. So combos without a modifier are live only while the overlay is on
-(`single_keys_live`); combos with Ctrl/Alt/Super always are.
+Single-key combos are live only while the overlay is on (`single_keys_live`);
+combos with Ctrl/Alt/Super always are. Live combos are also grabbed
+(keygrab.py) so the focused app doesn't receive them: overlay on, the key is
+ShortCutRadio's; overlay off, the key is free.
 
 Combo strings are "ctrl+alt+r", "'", "f9", "shift+page_down": modifiers in a
 fixed order, then the key. The same normaliser builds them for capture and for
@@ -18,6 +19,8 @@ import time
 import traceback
 
 from PySide6.QtCore import QObject, Signal
+
+from .keygrab import KeyGrabber
 
 try:
     from pynput import keyboard
@@ -94,8 +97,9 @@ class Hotkeys(QObject):
     def __init__(self, bindings):
         super().__init__()
         self.bindings = {}
+        self._single_live = False
+        self.grabber = KeyGrabber()
         self.set_bindings(bindings)
-        self.single_keys_live = False
         self.capturing = False
         self._mods = set()
         self._last = {}
@@ -105,6 +109,21 @@ class Hotkeys(QObject):
     def set_bindings(self, bindings):
         """{action: combo} -> lookup {combo: action}."""
         self.bindings = {c: a for a, c in bindings.items() if c}
+        self._update_grabs()
+
+    @property
+    def single_keys_live(self):
+        return self._single_live
+
+    @single_keys_live.setter
+    def single_keys_live(self, on):
+        self._single_live = bool(on)
+        self._update_grabs()
+
+    def _update_grabs(self):
+        live = [parse_combo(c) for c in self.bindings
+                if has_modifier(c) or self._single_live]
+        self.grabber.set_combos(live)
 
     def start(self):
         if keyboard is None:
@@ -114,6 +133,8 @@ class Hotkeys(QObject):
             self._listener = keyboard.Listener(on_press=self._safe(self._press),
                                                on_release=self._safe(self._release))
             self._listener.start()
+            self.grabber.start()
+            self._update_grabs()
         except Exception as e:
             self.error = str(e)
             print(f"[hotkeys] could not start: {e}", flush=True)
@@ -121,9 +142,10 @@ class Hotkeys(QObject):
         return True
 
     def stop(self):
-        if self._listener is not None:
-            self._listener.stop()
-            self._listener = None
+        """Release grabbed keys. The listener thread is a daemon and is left to
+        die with the process: pynput's XRECORD stop can block indefinitely."""
+        self.grabber.stop()
+        self._listener = None
 
     def begin_capture(self):
         self.capturing = True
@@ -153,7 +175,7 @@ class Hotkeys(QObject):
             return
         combo = make_combo(self._mods, name)
         if DEBUG:
-            print(f"[hotkeys] {combo!r} live={self.single_keys_live} "
+            print(f"[hotkeys] {combo!r} live={self._single_live} "
                   f"capturing={self.capturing} -> {self.bindings.get(combo)}", flush=True)
 
         if self.capturing:
@@ -164,7 +186,7 @@ class Hotkeys(QObject):
         action = self.bindings.get(combo)
         if action is None:
             return
-        if not has_modifier(combo) and not self.single_keys_live:
+        if not has_modifier(combo) and not self._single_live:
             return
         # Held keys auto-repeat; only volume should ride that.
         now = time.monotonic()

@@ -2,6 +2,7 @@
 
 import getpass
 import locale
+import os
 import signal
 import sys
 
@@ -163,10 +164,11 @@ class App:
     def quit(self):
         self._save_timer.stop()
         self.save()
-        self.hotkeys.stop()
-        self.player.shutdown()
         if self.tray:
             self.tray.hide()
+        self.overlay.hide()
+        self.player.shutdown()
+        self.hotkeys.stop()
         self.qapp.quit()
 
 
@@ -218,4 +220,10 @@ def main(argv=None):
     tick.timeout.connect(lambda: None)
     tick.start()
 
-    return qapp.exec()
+    rc = qapp.exec()
+    # Everything worth keeping is saved by now. Leave without waiting on the
+    # native threads (pynput's XRECORD reader, libmpv, Qt's D-Bus): a stop
+    # that never returns there once left a quit ShortCutRadio running forever.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(rc)
