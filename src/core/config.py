@@ -27,6 +27,7 @@ DEFAULTS = {
     "sources": [],
     "current": 0,
     "volume": 70,
+    "theme": "auto",           # "auto" follows the desktop; else "dark" / "light"
     "shortcuts": DEFAULT_SHORTCUTS,
     "overlay": {
         "visible": False,
@@ -91,6 +92,14 @@ def transparency_percent(opacity):
 
 def opacity_from_percent(transparency):
     return round(1 - max(0, min(100, transparency)) / 100, 2)
+
+
+THEMES = ("auto", "dark", "light")
+
+
+def normalize_theme(value):
+    """One of "auto" | "dark" | "light"; anything else means "auto"."""
+    return value if value in THEMES else "auto"
 
 
 def read_stations_conf(path):

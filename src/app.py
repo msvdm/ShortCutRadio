@@ -7,12 +7,14 @@ import signal
 import sys
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from .core.config import Config
+from .core.config import Config, normalize_theme
 from .core.hotkeys import Hotkeys, pretty
 from .core.player import Player
+from .gui import theme
 from .gui.main_window import MainWindow
 from .gui.overlay import Overlay
 from .gui.tray import Tray, make_icon
@@ -29,6 +31,8 @@ class App:
         qapp.setWindowIcon(self.icon)
         self.config = Config()
         cfg = self.config
+        self.window = None
+        self.apply_theme()
 
         self.player = Player(cfg["sources"], cfg["current"], cfg["volume"])
         self.hotkeys = Hotkeys(cfg["shortcuts"])
@@ -55,6 +59,11 @@ class App:
             "vol_down": lambda: self.player.change_volume(-VOLUME_STEP),
         }
 
+        try:            # follow the desktop while the theme is "auto"
+            QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
+        except AttributeError:
+            pass
+
         self.hotkeys.start()
         if self.tray:
             self.tray.show()
@@ -80,6 +89,27 @@ class App:
         fn = self.actions.get(action)
         if fn:
             fn()
+
+    # ------------------------------------------------------------------ theme
+    def apply_theme(self):
+        """Re-skin everything. The overlay is left out on purpose: it renders
+        over games, so it stays dark and follows the overlay settings only."""
+        name = normalize_theme(self.config["theme"])
+        theme.set_current(theme.resolve(name))
+        self.qapp.setStyleSheet(theme.stylesheet())
+        if self.window:
+            self.window.apply_theme()
+
+    def set_theme(self, name):
+        self.config["theme"] = normalize_theme(name)
+        self.apply_theme()
+        if self.tray:
+            self.tray.set_theme_checked(self.config["theme"])
+        self._save_timer.start()
+
+    def _scheme_changed(self, *_):
+        if normalize_theme(self.config["theme"]) == "auto":
+            self.apply_theme()
 
     # ------------------------------------------------------------------ overlay
     def set_overlay(self, on):
@@ -187,6 +217,8 @@ def _already_running():
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
     qapp = QApplication(argv)
+    # The skin assumes Fusion's metrics; the platform style would shift them.
+    qapp.setStyle("Fusion")
     qapp.setApplicationName("ShortCutRadio")
     qapp.setDesktopFileName("shortcutradio")
     qapp.setQuitOnLastWindowClosed(False)

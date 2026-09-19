@@ -9,9 +9,10 @@
 
 A hidden audio player that feels like part of the OS: a discreet corner
 overlay (toggled like the NVIDIA GPU-stats HUD) and a tray icon, controlled by
-global shortcuts. The user starts it and a small setup window opens: shortcuts
-on the left with **Add Folder** / **Add Stream** below them, and the source list
-on the right. Shortcuts cycle through the list.
+global shortcuts. The user starts it and a setup window opens: what's playing
+across the top, then the tabs **Sources** (the list, with **Add Folder** /
+**Add Stream** under it), **Shortcuts** and **Overlay**. Shortcuts cycle
+through the list.
 
 It grew out of the NFSU2 in-game radio (`~/Games/NFSU2/radio/`), which is now
 bypassed in that game's `play.sh` (`NFS_RADIO=1` still starts it). ShortCutRadio
@@ -39,7 +40,10 @@ src/core/player.py        libmpv (python-mpv) in-process; one `changed` signal w
 src/core/scraper.py       Add Stream: URL/page/playlist -> list of verified streams (stdlib only)
 src/core/hotkeys.py       pynput listener (observes) + gating + capture mode
 src/core/keygrab.py       X11 passive grabs so live keys don't reach the focused app
-src/gui/                  main_window, add_stream dialog, overlay, tray (icon drawn in code)
+src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
+src/gui/widgets.py        the hand-painted parts: art, pill switch, transport, meters
+src/gui/main_window.py    hero strip + tab strip + the three pages
+src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
 ```
 
@@ -72,6 +76,21 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   stays stopped (`Player.select_source`). Only an explicit play (double-click,
   menu Play, Play/Pause) starts playback. `pause` is set *before* loading, or
   the new source is heard for a moment.
+- **The window is skinned, not native.** One QSS string from `theme.stylesheet()`
+  on the QApplication covers the window, the dialogs, the message boxes and the
+  menus; `theme.tokens()` serves the parts painted by hand. The style is forced
+  to Fusion so the skin sits on predictable metrics. Design direction "1b", both
+  themes, was approved from a mock -- its colors, sizes, radii and paddings are
+  final values, not suggestions.
+- **The tab strip is plain buttons over a QStackedWidget-style show/hide, not a
+  QTabBar.** Two tabs put something of their own at the right end of that same
+  strip (the list hint on Sources, `Reset to default` on Overlay), which a
+  styled QTabBar cannot hold.
+- **The overlay card stays dark in both themes.** It renders over games, not
+  over the desktop, and takes its colors from the overlay settings only.
+- **Theme is `auto` | `dark` | `light`**, stored at the top level of the config
+  and switched from the tray. `auto` follows
+  `QGuiApplication.styleHints().colorScheme()` and falls back to dark.
 - **Overlay card size comes from the settings only** (width, font sizes), never
   from the text, so it doesn't jump. Text that doesn't fit scrolls (ticker) or
   is elided. The look is set in the window's Overlay Controls column.
@@ -92,6 +111,13 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   stops the whole listener.
 - **Key-press debouncing:** X auto-repeat sends press/release pairs, so holding
   a key repeats it. Only volume may repeat; other actions are debounced to 250 ms.
+- **A custom QWidget subclass ignores a stylesheet background** unless it sets
+  `WA_StyledBackground`. The tray's now-playing header rendered on the menu's
+  background until it did.
+- **QSS font-size beats `setFont`.** Anything given a monospace face in code
+  (key caps, the status line, the spin boxes) must have its size pinned in the
+  stylesheet too, or the class rule overrides it. The family survives, because
+  no rule sets `font-family`.
 - **Wayland is not supported** (pynput and X grabs are X11-only). Mint is X11 today.
 
 ## Testing
@@ -119,7 +145,10 @@ Packaging (PyInstaller / AppImage / Windows zip with mpv-2.dll), game hooks (e.g
 NFSU2 world-load autostart, in the style of the old radio's `/proc/<pid>/fd`
 check), MPRIS/SMTC media keys, Windows/macOS key suppression (pynput
 `win32_event_filter` / `darwin_intercept`), and confirming the overlay over
-fullscreen NFSU2. The author has an "at work" idea still to explain.
+fullscreen NFSU2. The tray menu's skin is unconfirmed on this desktop: if
+Cinnamon serves the tray over StatusNotifier/DBus the menu is drawn by the
+desktop and the stylesheet is ignored (the actions still work). Station art is
+a painted stripe placeholder -- the app has no artwork source yet. The author has an "at work" idea still to explain.
 
 ## Git
 

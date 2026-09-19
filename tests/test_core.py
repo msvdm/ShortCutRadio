@@ -1,6 +1,6 @@
 import random
 
-from src.core.config import opacity_from_percent, transparency_percent
+from src.core.config import normalize_theme, opacity_from_percent, transparency_percent
 from src.core.hotkeys import has_modifier, make_combo, parse_combo, pretty
 from src.core.player import now_playing
 from src.core.scraper import clean_name, harvest, looks_streamy, name_from_url, parse_playlist
@@ -78,3 +78,11 @@ def test_transparency_percent():
     assert transparency_percent("junk") == 45
     assert opacity_from_percent(45) == 0.55
     assert opacity_from_percent(150) == 0.0
+
+
+def test_normalize_theme():
+    assert normalize_theme("dark") == "dark"
+    assert normalize_theme("light") == "light"
+    assert normalize_theme("auto") == "auto"
+    assert normalize_theme("") == "auto"
+    assert normalize_theme(None) == "auto"

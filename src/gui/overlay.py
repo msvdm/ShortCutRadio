@@ -11,7 +11,13 @@ from PySide6.QtCore import QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-PAD_X, PAD_Y, GAP = 16, 10, 2
+from .widgets import draw_level_bars, level_bars_width, stripe_brush
+
+PAD_X, PAD_Y, GAP = 14, 11, 2
+ART, ART_GAP, ART_BAND, ART_RADIUS = 34, 11, 4, 7
+ART_A, ART_B = "#2a2f37", "#333942"
+BARS, BAR_W, BAR_GAP, BAR_LEFT = (6, 14, 9), 2, 2, 10
+BAR_COLOR = "#ff6a2b"
 FLASH_MS = 1600
 SCROLL_MS = 30         # ticker: 1 px per tick
 SCROLL_HOLD = 50       # ticks to rest at each end (1.5 s)
@@ -140,8 +146,23 @@ class Overlay(QWidget):
         self._update_ticker()
         self.update()
 
+    def _playing(self):
+        s = self.state
+        return bool(s.get("loaded")) and not s.get("paused") and not s.get("connecting")
+
+    def _art_size(self):
+        """Never taller than the card: the card's size comes from the settings."""
+        return max(0, min(ART, self.height() - 2 * PAD_Y))
+
+    def _text_x(self):
+        return PAD_X + self._art_size() + ART_GAP
+
     def _room(self):
-        return self.width() - 2 * PAD_X
+        """Width left for the text, once the art and the meter have their share."""
+        right = self.width() - PAD_X
+        if self._playing():
+            right -= level_bars_width(len(BARS), BAR_W, BAR_GAP) + BAR_LEFT
+        return max(20, right - self._text_x())
 
     def _overflow(self):
         """How far each line sticks out past the card (0 = it fits)."""
@@ -198,8 +219,22 @@ class Overlay(QWidget):
         p.setPen(QColor(255, 255, 255, 36))
         p.drawPath(path)
 
+        art = self._art_size()
+        if art:
+            art_rect = QRectF(PAD_X, (self.height() - art) / 2, art, art)
+            art_path = QPainterPath()
+            art_path.addRoundedRect(art_rect, ART_RADIUS, ART_RADIUS)
+            p.save()
+            p.setClipPath(art_path)
+            p.fillRect(art_rect, stripe_brush(ART_BAND, ART_A, ART_B))
+            p.restore()
+        if self._playing():
+            draw_level_bars(p, self.width() - PAD_X, self.height() / 2 + max(BARS) / 2,
+                            BARS, BAR_COLOR, BAR_W, BAR_GAP)
+
         title, second = self.lines
         room = self._room()
+        x = self._text_x()
         tf, sf = QFontMetrics(self.title_font), QFontMetrics(self.small_font)
         scroll = bool(c["scroll"])
         title_over, second_over = self._overflow()
@@ -207,24 +242,24 @@ class Overlay(QWidget):
         y = PAD_Y + tf.ascent()
         p.setFont(self.title_font)
         p.setPen(QColor(c["title_color"]))
-        self._draw_line(p, tf, title, y, room, title_over, scroll)
+        self._draw_line(p, tf, title, x, y, room, title_over, scroll)
 
         if second:
             y += tf.descent() + GAP + sf.ascent()
             p.setFont(self.small_font)
             p.setPen(QColor(c["text_color"]))
-            self._draw_line(p, sf, second, y, room, second_over, scroll)
+            self._draw_line(p, sf, second, x, y, room, second_over, scroll)
         p.end()
 
-    def _draw_line(self, p, fm, text, y, room, overflow, scroll):
+    def _draw_line(self, p, fm, text, x, y, room, overflow, scroll):
         """Draw one line in `room` px: as is, as a ticker, or elided."""
         if not overflow:
-            p.drawText(PAD_X, y, text)
+            p.drawText(x, y, text)
             return
         if not scroll:
-            p.drawText(PAD_X, y, fm.elidedText(text, Qt.TextElideMode.ElideRight, room))
+            p.drawText(x, y, fm.elidedText(text, Qt.TextElideMode.ElideRight, room))
             return
         p.save()
-        p.setClipRect(QRectF(PAD_X, y - fm.ascent(), room, fm.height()))
-        p.drawText(PAD_X - self._offset(overflow), y, text)
+        p.setClipRect(QRectF(x, y - fm.ascent(), room, fm.height()))
+        p.drawText(x - self._offset(overflow), y, text)
         p.restore()
