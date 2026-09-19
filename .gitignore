@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+# portable mode keeps settings next to the app
+shortcutradio.portable
+data/
