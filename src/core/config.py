@@ -34,9 +34,16 @@ DEFAULTS = {
         "margin_x": 28,
         "margin_y": 24,
         "opacity": 0.55,
+        "font_family": "",        # "" = the system UI font
+        "title_style": "Bold",
+        "text_style": "Regular",
         "title_size": 15,
         "track_size": 11,
-        "max_width": 420,
+        "width": 250,
+        "scroll": True,
+        "bg_color": "#000000",
+        "title_color": "#ffffff",
+        "text_color": "#c7d0d8",
     },
 }
 
@@ -72,6 +79,18 @@ def _merge(defaults, loaded):
         else:
             out[key] = value
     return out
+
+
+def transparency_percent(opacity):
+    """The overlay's stored background opacity (0..1) as transparency in %."""
+    try:
+        return max(0, min(100, round(100 - float(opacity) * 100)))
+    except (TypeError, ValueError):
+        return transparency_percent(DEFAULTS["overlay"]["opacity"])
+
+
+def opacity_from_percent(transparency):
+    return round(1 - max(0, min(100, transparency)) / 100, 2)
 
 
 def read_stations_conf(path):

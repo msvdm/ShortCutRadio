@@ -7,13 +7,41 @@ through, and it is re-raised every few seconds because a fullscreen window
 that raises itself would otherwise cover it.
 """
 
-from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPainterPath
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
 PAD_X, PAD_Y, GAP = 16, 10, 2
 FLASH_MS = 1600
+SCROLL_MS = 30         # ticker: 1 px per tick
+SCROLL_HOLD = 50       # ticks to rest at each end (1.5 s)
 RAISE_MS = 3000
+
+
+def overlay_family(conf):
+    """The configured font family, or the system UI font when unset."""
+    return conf.get("font_family") or QGuiApplication.font().family()
+
+
+def pick_style(styles, wanted, bold):
+    """`wanted` if the family has it, else its closest plain or bold style."""
+    if wanted in styles:
+        return wanted
+    for name in (["Bold", "Semibold", "SemiBold", "Medium"] if bold
+                 else ["Regular", "Book", "Normal", "Roman", "Medium"]):
+        if name in styles:
+            return name
+    return styles[0] if styles else ""
+
+
+def make_font(family, style, size, bold):
+    styles = QFontDatabase.styles(family)
+    style = pick_style(styles, style, bold)
+    if style:
+        return QFontDatabase.font(family, style, int(size))
+    f = QFont(family, int(size))
+    f.setBold(bold)
+    return f
 
 
 class Overlay(QWidget):
@@ -31,20 +59,21 @@ class Overlay(QWidget):
         self.setWindowTitle("ShortCutRadio overlay")
         self.state = {}
         self.flash = ""
-        self.lines = ("", "", "")
+        self.lines = ("", "")
+        self._tick = 0
 
         self._flash_timer = QTimer(self, singleShot=True, interval=FLASH_MS)
         self._flash_timer.timeout.connect(self._end_flash)
         self._raise_timer = QTimer(self, interval=RAISE_MS)
         self._raise_timer.timeout.connect(self.raise_)
+        self._scroll_timer = QTimer(self, interval=SCROLL_MS)
+        self._scroll_timer.timeout.connect(self._advance)
         self._apply_fonts()
 
     def _apply_fonts(self):
-        self.title_font = QFont(self.font())
-        self.title_font.setPointSize(int(self.conf["title_size"]))
-        self.title_font.setBold(True)
-        self.small_font = QFont(self.font())
-        self.small_font.setPointSize(int(self.conf["track_size"]))
+        c, family = self.conf, overlay_family(self.conf)
+        self.title_font = make_font(family, c["title_style"], c["title_size"], bold=True)
+        self.small_font = make_font(family, c["text_style"], c["track_size"], bold=False)
 
     # ------------------------------------------------------------------ state
     def set_state(self, state):
@@ -72,6 +101,7 @@ class Overlay(QWidget):
         else:
             self._raise_timer.stop()
             self.hide()
+        self._update_ticker()
 
     def _second_line(self):
         s = self.state
@@ -94,21 +124,50 @@ class Overlay(QWidget):
         title = s.get("name") or "ShortCutRadio"
         if s.get("loaded") and s.get("paused"):
             title = "❚❚  " + title
-        counter = f"{s['index'] + 1}/{s['count']}" if s.get("count") else ""
-        if s.get("track_pos") and s.get("track_count"):
-            counter += f"  ·  {s['track_pos']}/{s['track_count']}"
-        self.lines = (title, counter, self._second_line())
+        lines = (title, self._second_line())
+        if lines != self.lines:
+            self.lines = lines
+            self._tick = 0          # new text: the ticker starts from the left
 
-        max_w = int(self.conf["max_width"])
+        # The size comes from the settings only, never from the text, so the
+        # card doesn't jump around as the status and track change.
         tf, sf = QFontMetrics(self.title_font), QFontMetrics(self.small_font)
-        counter_w = sf.horizontalAdvance(counter) + (12 if counter else 0)
-        w = max(tf.horizontalAdvance(title) + counter_w,
-                sf.horizontalAdvance(self.lines[2]) if self.lines[2] else 0)
-        w = min(max_w, w) + 2 * PAD_X
-        h = tf.height() + (GAP + sf.height() if self.lines[2] else 0) + 2 * PAD_Y
-        self.resize(max(w, 120), h)
+        w = max(120, int(self.conf["width"]))
+        h = tf.height() + GAP + sf.height() + 2 * PAD_Y
+        if self.size() != QSize(w, h):
+            self.resize(w, h)
         self._reposition()
+        self._update_ticker()
         self.update()
+
+    def _room(self):
+        return self.width() - 2 * PAD_X
+
+    def _overflow(self):
+        """How far each line sticks out past the card (0 = it fits)."""
+        title, second = self.lines
+        tf, sf = QFontMetrics(self.title_font), QFontMetrics(self.small_font)
+        return (max(0, tf.horizontalAdvance(title) - self._room()),
+                max(0, sf.horizontalAdvance(second) - self._room()) if second else 0)
+
+    def _update_ticker(self):
+        run = bool(self.conf["scroll"]) and self.isVisible() and max(self._overflow()) > 0
+        if run and not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+        elif not run:
+            self._scroll_timer.stop()
+            self._tick = 0
+
+    def _advance(self):
+        # Hold at the start, scroll 1 px per tick to the end, hold, restart.
+        # All overflowing lines share one cycle so they restart together.
+        self._tick += 1
+        if self._tick > 2 * SCROLL_HOLD + max(self._overflow()):
+            self._tick = 0
+        self.update()
+
+    def _offset(self, overflow):
+        return min(overflow, max(0, self._tick - SCROLL_HOLD))
 
     def _reposition(self):
         screen = QGuiApplication.primaryScreen()
@@ -127,33 +186,45 @@ class Overlay(QWidget):
 
     # ------------------------------------------------------------------ paint
     def paintEvent(self, _event):
+        c = self.conf
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect, 12, 12)
-        p.fillPath(path, QColor(0, 0, 0, int(255 * float(self.conf["opacity"]))))
+        bg = QColor(c["bg_color"])
+        bg.setAlphaF(max(0.0, min(1.0, float(c["opacity"]))))
+        p.fillPath(path, bg)
         p.setPen(QColor(255, 255, 255, 36))
         p.drawPath(path)
 
-        title, counter, second = self.lines
-        inner_w = self.width() - 2 * PAD_X
+        title, second = self.lines
+        room = self._room()
         tf, sf = QFontMetrics(self.title_font), QFontMetrics(self.small_font)
-        counter_w = sf.horizontalAdvance(counter) + (12 if counter else 0)
+        scroll = bool(c["scroll"])
+        title_over, second_over = self._overflow()
 
         y = PAD_Y + tf.ascent()
         p.setFont(self.title_font)
-        p.setPen(QColor("#ffffff"))
-        title_el = tf.elidedText(title, Qt.TextElideMode.ElideRight, max(40, inner_w - counter_w))
-        p.drawText(PAD_X, y, title_el)
-        if counter:
-            p.setFont(self.small_font)
-            p.setPen(QColor("#8a939c"))
-            p.drawText(PAD_X + tf.horizontalAdvance(title_el) + 12, y, counter)
+        p.setPen(QColor(c["title_color"]))
+        self._draw_line(p, tf, title, y, room, title_over, scroll)
 
         if second:
             y += tf.descent() + GAP + sf.ascent()
             p.setFont(self.small_font)
-            p.setPen(QColor("#c7d0d8"))
-            p.drawText(PAD_X, y, sf.elidedText(second, Qt.TextElideMode.ElideRight, inner_w))
+            p.setPen(QColor(c["text_color"]))
+            self._draw_line(p, sf, second, y, room, second_over, scroll)
         p.end()
+
+    def _draw_line(self, p, fm, text, y, room, overflow, scroll):
+        """Draw one line in `room` px: as is, as a ticker, or elided."""
+        if not overflow:
+            p.drawText(PAD_X, y, text)
+            return
+        if not scroll:
+            p.drawText(PAD_X, y, fm.elidedText(text, Qt.TextElideMode.ElideRight, room))
+            return
+        p.save()
+        p.setClipRect(QRectF(PAD_X, y - fm.ascent(), room, fm.height()))
+        p.drawText(PAD_X - self._offset(overflow), y, text)
+        p.restore()

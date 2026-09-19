@@ -4,16 +4,18 @@ Closing it only hides it; ShortCutRadio keeps playing from the tray.
 """
 
 from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtGui import QAction, QFont, QKeySequence
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
-                               QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-                               QListWidget, QListWidgetItem, QMenu, QMessageBox,
-                               QPushButton, QSlider, QStyle, QStyledItemDelegate,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QKeySequence
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QComboBox,
+                               QFileDialog, QFontComboBox, QFrame, QGridLayout, QHBoxLayout,
+                               QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu,
+                               QMessageBox, QPushButton, QSlider, QSpinBox, QStyle,
+                               QStyledItemDelegate, QVBoxLayout, QWidget)
 
+from ..core.config import DEFAULTS, opacity_from_percent, transparency_percent
 from ..core.hotkeys import has_modifier, pretty
 from ..core.sources import describe, folder_tracks, is_folder, make_folder, make_stream
 from .add_stream import AddStreamDialog
+from .overlay import overlay_family, pick_style
 
 SHORTCUT_ROWS = [
     ("overlay", "Overlay on / off"),
@@ -27,6 +29,9 @@ SHORTCUT_ROWS = [
 ]
 CORNERS = [("top-right", "Top right"), ("top-left", "Top left"),
            ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left")]
+CAPTURE_TIP = ("Click, then press the new key (Esc cancels, Backspace clears).\n"
+               "Single-key shortcuts only work while the overlay is on,\n"
+               "so typing is safe when it's off.")
 SOURCE_ROLE = Qt.ItemDataRole.UserRole
 
 
@@ -86,7 +91,7 @@ class ShortcutButton(QPushButton):
         super().__init__()
         self.action = action
         self.window_ = window
-        self.setMinimumWidth(130)
+        self.setMinimumWidth(76)
         self.clicked.connect(lambda: window.begin_capture(self))
 
     def keyPressEvent(self, event):
@@ -103,58 +108,62 @@ class MainWindow(QWidget):
         self.capturing = None
         self.setWindowTitle("ShortCutRadio")
         self.setWindowIcon(app.icon)
-        self.resize(860, 540)
+        self.resize(760, 410)
 
         # ---------------------------------------------------------- left
         left = QFrame()
-        left.setFixedWidth(330)
+        left.setFixedWidth(380)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 12, 0)
 
-        head = QLabel("Shortcuts")
+        head_row = QHBoxLayout()
+        head = QLabel("Overlay Controls")
         head.setStyleSheet("font-size: 15px; font-weight: 600;")
-        ll.addWidget(head)
+        head_row.addWidget(head)
+        head_row.addStretch(1)
+        reset = QPushButton("Reset to Default")
+        reset.setToolTip("Restore the default size, margins, font, transparency and colors")
+        reset.clicked.connect(self._reset_look)
+        head_row.addWidget(reset)
+        ll.addLayout(head_row)
 
         grid = QGridLayout()
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(4)
         self.shortcut_buttons = {}
-        for row, (action, label) in enumerate(SHORTCUT_ROWS):
-            grid.addWidget(QLabel(label), row, 0)
+        grid.setColumnMinimumWidth(2, 8)        # gap between the two pairs
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(4, 1)
+        for i, (action, label) in enumerate(SHORTCUT_ROWS):
+            row, col = divmod(i, 2)             # two pairs per row
+            col *= 3
+            grid.addWidget(QLabel(label), row, col)
             btn = ShortcutButton(action, self)
+            btn.setToolTip(CAPTURE_TIP)
             self.shortcut_buttons[action] = btn
-            grid.addWidget(btn, row, 1)
+            grid.addWidget(btn, row, col + 1)
         ll.addLayout(grid)
 
-        self.capture_hint = QLabel(
-            "Single-key shortcuts only work while the overlay is on, so typing "
-            "is safe when it's off. Click a shortcut, then press the new key "
-            "(Esc cancels, Backspace clears).")
-        self.capture_hint.setWordWrap(True)
-        self.capture_hint.setStyleSheet("color: palette(placeholder-text);")
-        ll.addWidget(self.capture_hint)
         if app.hotkeys.error:
             warn = QLabel(f"Global shortcuts are unavailable: {app.hotkeys.error}")
             warn.setWordWrap(True)
             warn.setStyleSheet("color: #c0392b;")
             ll.addWidget(warn)
 
-        ll.addSpacing(8)
-        ov_head = QLabel("Overlay")
-        ov_head.setStyleSheet("font-size: 15px; font-weight: 600;")
-        ll.addWidget(ov_head)
+        ll.addSpacing(4)
         ov_row = QHBoxLayout()
         self.overlay_check = QCheckBox("Show overlay")
         self.overlay_check.toggled.connect(app.set_overlay)
         self.corner = QComboBox()
         for key, label in CORNERS:
             self.corner.addItem(label, key)
-        self.corner.setCurrentIndex(max(0, self.corner.findData(app.config["overlay"]["corner"])))
         self.corner.currentIndexChanged.connect(
-            lambda _: app.set_overlay_corner(self.corner.currentData()))
+            lambda _: app.set_overlay_option("corner", self.corner.currentData()))
         ov_row.addWidget(self.overlay_check)
         ov_row.addStretch(1)
         ov_row.addWidget(self.corner)
         ll.addLayout(ov_row)
+        ll.addLayout(self._build_look())
+        self.refresh_look()
 
         ll.addStretch(1)
         add_row = QHBoxLayout()
@@ -165,7 +174,6 @@ class MainWindow(QWidget):
         for b in (add_folder, add_stream):
             b.setMinimumHeight(34)
             add_row.addWidget(b)
-        ll.addLayout(add_row)
 
         # ---------------------------------------------------------- right
         right = QWidget()
@@ -176,8 +184,9 @@ class MainWindow(QWidget):
         src_head.setStyleSheet("font-size: 15px; font-weight: 600;")
         rh.addWidget(src_head)
         rh.addStretch(1)
-        tip = QLabel("drag to reorder · double-click to play · right-click for more")
+        tip = QLabel("drag to reorder · double-click to play\nright-click for more")
         tip.setStyleSheet("color: palette(placeholder-text);")
+        tip.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         rh.addWidget(tip)
         rl.addLayout(rh)
 
@@ -191,6 +200,7 @@ class MainWindow(QWidget):
         self.list.itemDoubleClicked.connect(lambda it: app.player.play_source(self.list.row(it)))
         self.list.model().rowsMoved.connect(self._rows_moved)
         rl.addWidget(self.list, 1)
+        rl.addLayout(add_row)
 
         delete = QAction(self.list)
         delete.setShortcut(QKeySequence.StandardKey.Delete)
@@ -198,11 +208,11 @@ class MainWindow(QWidget):
         delete.triggered.connect(self.remove_selected)
         self.list.addAction(delete)
 
-        # Now playing + transport
+        # Now playing + transport, at the bottom of the left column
         self.now = QLabel("Stopped")
         self.now.setWordWrap(True)
         self.now.setStyleSheet("font-weight: 600;")
-        rl.addWidget(self.now)
+        ll.addWidget(self.now)
         tr = QHBoxLayout()
         st = self.style()
         self.b_prev = self._tool(st.standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward),
@@ -215,16 +225,20 @@ class MainWindow(QWidget):
                                   "Next track (folders)", app.player.next_track)
         for b in (self.b_prev, self.b_play, self.b_next, self.b_track):
             tr.addWidget(b)
-        tr.addSpacing(12)
-        tr.addWidget(QLabel("Volume"))
+        tr.addSpacing(8)
+        speaker = QLabel()
+        speaker.setPixmap(st.standardIcon(QStyle.StandardPixmap.SP_MediaVolume).pixmap(16, 16))
+        speaker.setToolTip("Volume")
+        tr.addWidget(speaker)
         self.volume = QSlider(Qt.Orientation.Horizontal)
+        self.volume.setToolTip("Volume")
         self.volume.setRange(0, 130)
         self.volume.valueChanged.connect(self._volume_moved)
         tr.addWidget(self.volume, 1)
         self.vol_label = QLabel("")
         self.vol_label.setMinimumWidth(40)
         tr.addWidget(self.vol_label)
-        rl.addLayout(tr)
+        ll.addLayout(tr)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -241,9 +255,158 @@ class MainWindow(QWidget):
     def _tool(self, icon, tip, fn):
         b = QPushButton(icon, "")
         b.setToolTip(tip)
-        b.setFixedWidth(40)
+        b.setFixedWidth(34)
         b.clicked.connect(fn)
         return b
+
+    # ------------------------------------------------------------------ overlay look
+    def _build_look(self):
+        """Size, margins, scrolling, font, transparency and colors of the card.
+
+        Columns: label | field | field | number box | color box, so the number
+        and color boxes line up down the block.
+        """
+        g = QGridLayout()
+        g.setVerticalSpacing(4)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(3, 1)
+        self.look = {}
+        self.color_buttons = {}
+
+        def color(key, tip):
+            b = QPushButton()
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False: self._pick_color(key))
+            self.color_buttons[key] = b
+            return b
+
+        def spin(key, lo, hi, suffix, tip):
+            sb = QSpinBox()
+            sb.setRange(lo, hi)
+            sb.setSuffix(suffix)
+            sb.setToolTip(tip)
+            sb.valueChanged.connect(lambda v: self.app.set_overlay_option(key, v))
+            self.look[key] = sb
+            return sb
+
+        g.addWidget(QLabel("Width"), 0, 0)
+        g.addWidget(spin("width", 200, 1200, " px", "Card width"), 0, 1)
+        g.addWidget(QLabel("Margin X"), 0, 2)
+        g.addWidget(spin("margin_x", 0, 500, " px", "Distance from the left/right screen edge"), 0, 3)
+        self.scroll_check = QCheckBox("Scroll long text")
+        self.scroll_check.setToolTip("Text that doesn't fit scrolls like a ticker instead of ending in …")
+        self.scroll_check.toggled.connect(lambda on: self.app.set_overlay_option("scroll", on))
+        g.addWidget(self.scroll_check, 1, 0, 1, 2)
+        g.addWidget(QLabel("Margin Y"), 1, 2)
+        g.addWidget(spin("margin_y", 0, 500, " px", "Distance from the top/bottom screen edge"), 1, 3)
+
+        # Font: family for both lines, then style and size per line.
+        g.addWidget(QLabel("Font"), 2, 0)
+        self.font_family = QFontComboBox()
+        self.font_family.setToolTip("Font of the overlay text")
+        self.font_family.currentFontChanged.connect(self._family_changed)
+        g.addWidget(self.font_family, 2, 1, 1, 4)
+        self.style_boxes = {}
+        for row, (label, style_key, size_key, color_key, lo, hi, tip) in enumerate(
+                [("Row 1", "title_style", "title_size", "title_color", 8, 48, "Row 1 (station name)"),
+                 ("Row 2", "text_style", "track_size", "text_color", 6, 36, "Row 2 (track / status)")],
+                start=3):
+            g.addWidget(QLabel(label), row, 0)
+            box = QComboBox()
+            box.setToolTip(f"{tip} style")
+            box.currentTextChanged.connect(
+                lambda t, k=style_key: t and self.app.set_overlay_option(k, t))
+            self.style_boxes[style_key] = box
+            g.addWidget(box, row, 1, 1, 2)
+            g.addWidget(spin(size_key, lo, hi, " pt", f"{tip} size"), row, 3)
+            g.addWidget(color(color_key, f"{tip} color"), row, 4)
+
+        g.addWidget(QLabel("Transparency"), 5, 0)
+        self.transp_slider = QSlider(Qt.Orientation.Horizontal)
+        self.transp_spin = QSpinBox()
+        self.transp_spin.setSuffix(" %")
+        for w in (self.transp_slider, self.transp_spin):
+            w.setRange(0, 100)
+            w.setToolTip("Background transparency (the text stays solid)")
+            w.valueChanged.connect(self._transparency_changed)
+        g.addWidget(self.transp_slider, 5, 1, 1, 2)
+        g.addWidget(self.transp_spin, 5, 3)
+        g.addWidget(color("bg_color", "Background color"), 5, 4)
+
+        # Color boxes: square, as tall as the number boxes next to them.
+        h = self.transp_spin.sizeHint().height()
+        for b in self.color_buttons.values():
+            b.setFixedSize(h + 6, h)
+        return g
+
+    def refresh_look(self):
+        """Put the config values into the controls without re-saving them."""
+        conf = self.app.config["overlay"]
+        widgets = [self.corner, self.scroll_check, self.transp_slider, self.transp_spin,
+                   self.font_family, *self.style_boxes.values(), *self.look.values()]
+        for w in widgets:
+            w.blockSignals(True)
+        self.corner.setCurrentIndex(max(0, self.corner.findData(conf["corner"])))
+        for key, sb in self.look.items():
+            sb.setValue(int(conf[key]))
+        self.scroll_check.setChecked(bool(conf["scroll"]))
+        t = transparency_percent(conf["opacity"])
+        self.transp_slider.setValue(t)
+        self.transp_spin.setValue(t)
+        family = overlay_family(conf)
+        self.font_family.setCurrentFont(QFont(family))
+        self._fill_styles(family)
+        for w in widgets:
+            w.blockSignals(False)
+        for key, b in self.color_buttons.items():
+            b.setStyleSheet(f"background: {conf[key]}; border: 1px solid #888;")
+
+    def _fill_styles(self, family):
+        """List the family's styles; keep the saved style, else the nearest one."""
+        conf = self.app.config["overlay"]
+        styles = sorted(QFontDatabase.styles(family) or ["Regular", "Bold"],
+                        key=lambda st: ("Condensed" in st, QFontDatabase.italic(family, st),
+                                        QFontDatabase.weight(family, st)))
+        for key, box in self.style_boxes.items():
+            box.clear()
+            box.addItems(styles)
+            box.setCurrentText(pick_style(styles, conf[key], bold=(key == "title_style")))
+
+    def _family_changed(self, font):
+        conf = self.app.config["overlay"]
+        conf["font_family"] = font.family()
+        boxes = list(self.style_boxes.values())
+        for b in boxes:
+            b.blockSignals(True)
+        self._fill_styles(font.family())
+        for b in boxes:
+            b.blockSignals(False)
+        for key, box in self.style_boxes.items():
+            conf[key] = box.currentText()
+        self.app.set_overlay_option("font_family", font.family())   # reload + save
+
+    def _transparency_changed(self, t):
+        for w in (self.transp_slider, self.transp_spin):
+            if w.value() != t:
+                w.blockSignals(True)
+                w.setValue(t)
+                w.blockSignals(False)
+        self.app.set_overlay_option("opacity", opacity_from_percent(t))
+
+    def _pick_color(self, key):
+        conf = self.app.config["overlay"]
+        c = QColorDialog.getColor(QColor(conf[key]), self, self.color_buttons[key].toolTip())
+        if c.isValid():
+            self.app.set_overlay_option(key, c.name())
+            self.refresh_look()
+
+    def _reset_look(self):
+        conf = self.app.config["overlay"]
+        for key, value in DEFAULTS["overlay"].items():
+            if key not in ("visible", "corner"):
+                conf[key] = value
+        self.app.set_overlay_option("corner", conf["corner"])   # reload + save
+        self.refresh_look()
 
     # ------------------------------------------------------------------ state
     def update_state(self, s):

@@ -68,6 +68,13 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   has no index argument.
 - **Streams retry** 5 s after an EOF or error (see `Player._on_end_file`).
   Replacing a file ends it with reason ABORTED, which must be ignored.
+- **Next/previous source keep the play state:** paused stays paused, stopped
+  stays stopped (`Player.select_source`). Only an explicit play (double-click,
+  menu Play, Play/Pause) starts playback. `pause` is set *before* loading, or
+  the new source is heard for a moment.
+- **Overlay card size comes from the settings only** (width, font sizes), never
+  from the text, so it doesn't jump. Text that doesn't fit scrolls (ticker) or
+  is elided. The look is set in the window's Overlay Controls column.
 - **Overlay:** a frameless Qt window that stays on top, lets input through
   (`WindowTransparentForInput`) and bypasses the window manager, and is re-raised every
   3 s. Click-through was verified: its X input shape is empty. Drawing over a

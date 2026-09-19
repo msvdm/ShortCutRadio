@@ -1,5 +1,6 @@
 import random
 
+from src.core.config import opacity_from_percent, transparency_percent
 from src.core.hotkeys import has_modifier, make_combo, parse_combo, pretty
 from src.core.player import now_playing
 from src.core.scraper import clean_name, harvest, looks_streamy, name_from_url, parse_playlist
@@ -69,3 +70,11 @@ def test_now_playing():
     url = "https://ice1.somafm.com/groovesalad-128-mp3"
     assert now_playing({"icy-title": "Song"}, "", url, "stream") == "Song"
     assert now_playing({}, "groovesalad-128-mp3", url, "stream") == ""
+
+
+def test_transparency_percent():
+    assert transparency_percent(0.55) == 45
+    assert transparency_percent(1) == 0
+    assert transparency_percent("junk") == 45
+    assert opacity_from_percent(45) == 0.55
+    assert opacity_from_percent(150) == 0.0

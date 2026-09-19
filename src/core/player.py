@@ -118,7 +118,7 @@ class Player(QObject):
     def _retry_stream(self):
         src = self.current_source()
         if src and not is_folder(src) and not self.loaded():
-            self._tune()
+            self._tune(paused=bool(self.mpv.pause))
 
     # ---------------------------------------------------------------- state
     def current_source(self):
@@ -127,7 +127,9 @@ class Player(QObject):
         return None
 
     def loaded(self):
-        return not self._props.get("idle-active", True)
+        # Ask mpv, not the observed copy: that one can lag a second behind a
+        # stop, and Next right after Stop would then start playing.
+        return not self.mpv.idle_active
 
     def snapshot(self):
         with self._lock:
@@ -156,7 +158,7 @@ class Player(QObject):
         self.changed.emit(self.snapshot())
 
     # ---------------------------------------------------------------- commands
-    def _tune(self):
+    def _tune(self, paused=False):
         src = self.current_source()
         self._retry.stop()
         with self._lock:
@@ -178,25 +180,45 @@ class Player(QObject):
                 return
             with open(self._playlist_file, "w", encoding="utf-8") as fh:
                 fh.write("#EXTM3U\n" + "\n".join(tracks) + "\n")
+            # Set pause before loading, or the new source is heard starting.
+            self.mpv.pause = paused
             self.mpv.loop_playlist = "inf"
             self.mpv.loadlist(self._playlist_file, "replace")
         else:
+            self.mpv.pause = paused
             self.mpv.loop_playlist = "no"
             self.mpv.loadfile(src["target"], "replace")
-        self.mpv.pause = False
         self._emit()
 
     def play_source(self, index):
+        """Explicit play (double-click, menu Play): always starts playback."""
         if not self.sources:
             return
         self.index = index % len(self.sources)
         self._tune()
 
+    def select_source(self, index):
+        """Next/previous: change the source, keep the play state.
+
+        Paused stays paused, stopped stays stopped. A stream waiting to
+        reconnect counts as playing.
+        """
+        if not self.sources:
+            return
+        self.index = index % len(self.sources)
+        if self.loaded() or self._retry.isActive():
+            self._tune(paused=bool(self.mpv.pause))
+        else:
+            self._retry.stop()
+            with self._lock:
+                self.error = ""
+            self._emit()
+
     def next_source(self):
-        self.play_source(self.index + 1)
+        self.select_source(self.index + 1)
 
     def prev_source(self):
-        self.play_source(self.index - 1)
+        self.select_source(self.index - 1)
 
     def next_track(self):
         src = self.current_source()

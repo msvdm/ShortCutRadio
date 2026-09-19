@@ -92,8 +92,8 @@ class App:
             self.tray.set_overlay_checked(on)
         self._save_timer.start()
 
-    def set_overlay_corner(self, corner):
-        self.config["overlay"]["corner"] = corner
+    def set_overlay_option(self, key, value):
+        self.config["overlay"][key] = value
         self.overlay.reload_conf()
         self._save_timer.start()
 
