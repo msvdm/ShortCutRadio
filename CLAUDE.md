@@ -96,9 +96,9 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
 - **Station art has four sources, in this order:** a picture the author set by
   hand (right-click a source), a real cover for a folder (`cover|folder|front…`
   beside the track, then art embedded in it), the station's own site logo for
-  a stream, and -- when all of that comes up empty -- a tile of the source's
-  initials on a colour hashed from its name. The tile replaced the old stripe
-  placeholder: the box is never blank, so nothing looks unwired.
+  a stream, and -- when all of that comes up empty -- a tile of initials on a
+  colour, both from the source's address (see below). The tile replaced the old
+  stripe placeholder: the box is never blank, so nothing looks unwired.
 - **A station can be told where it lives** (right-click -> `Station page…`).
   Add Stream records the page it harvested, and a playing Icecast/SHOUTcast
   mount announces one in `icy-url`, but an HLS stream announces nothing and
@@ -261,8 +261,7 @@ check), MPRIS/SMTC media keys, Windows/macOS key suppression (pynput
 fullscreen NFSU2. The tray menu's skin is unconfirmed on this desktop: if
 Cinnamon serves the tray over StatusNotifier/DBus the menu is drawn by the
 desktop and the stylesheet is ignored (the actions still work) -- the art in
-its header is drawn by ShortCutRadio either way, but has not been seen. The author
-has an "at work" idea still to explain.
+its header is drawn by ShortCutRadio either way, but has not been seen.
 
 ## Git
 
