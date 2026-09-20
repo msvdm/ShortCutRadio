@@ -48,8 +48,11 @@ DARK = {
     "menu_border": "#2c3139",
     "menu_hover": "#23272e",
     "menu_sep": "#2a2e35",
-    "art_a": "#242931",
-    "art_b": "#2b313a",
+    "tile_sat": 120,                # the generated art tile: saturation,
+    "tile_val": 96,                 # value and letter colour
+    "tile_text": "#f1f3f6",
+    "art_dark": "#1b1f26",          # what a cut-out logo sits on: the dark
+    "art_light": "#e8eaee",         # panel for a pale logo, the light one else
 }
 
 LIGHT = {
@@ -84,8 +87,11 @@ LIGHT = {
     "menu_border": "#e3e1dd",
     "menu_hover": "#f7f5f2",
     "menu_sep": "#eeece8",
-    "art_a": "#f0ede8",
-    "art_b": "#e7e3dd",
+    "tile_sat": 70,
+    "tile_val": 225,
+    "tile_text": "#2a2723",
+    "art_dark": "#2c3039",
+    "art_light": "#f0ede8",
 }
 
 _current = DARK
@@ -117,8 +123,16 @@ def stylesheet(t=None):
     t = t or _current
     return f"""
 /* ---------------------------------------------------------------- base */
-QDialog, QMessageBox, QInputDialog, QColorDialog, #window {{
+QDialog, QMessageBox, QInputDialog, QColorDialog {{
     background: {t['window']};
+}}
+/* The window has no titlebar: #window is only the transparent carrier that
+   holds the resize margin, and #shell is the card the author actually sees. */
+#window {{ background: transparent; }}
+#shell {{
+    background: {t['window']};
+    border: 1px solid {t['border']};
+    border-radius: 14px;
 }}
 QWidget {{ color: {t['text2']}; }}
 QLabel {{ background: transparent; color: {t['text2']}; font-size: 13px; }}
@@ -129,20 +143,16 @@ QToolTip {{
 }}
 
 /* ---------------------------------------------------------------- hero */
+/* The hero paints its own gradient, so it has to round the card's top corners
+   itself or it squares them off again. */
 #hero {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 {t['hero_from']}, stop:1 {t['hero_to']});
-}}
-#heroCompact {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 {t['hero_from']}, stop:1 {t['hero_to']});
-    border-bottom: 1px solid {t['hairline']};
+    border-top-left-radius: 13px; border-top-right-radius: 13px;
 }}
 #heroName {{ font-size: 22px; font-weight: 600; color: {t['text']}; }}
 #heroTrack {{ font-size: 14px; color: {t['muted']}; }}
 #heroStatus {{ font-size: 10px; color: {t['accent_small']}; }}
-#heroCompactName {{ font-size: 15px; font-weight: 600; color: {t['text']}; }}
-#heroCompactTrack {{ font-size: 12px; color: {t['muted']}; }}
 #heroVolume {{ font-size: 12px; color: {t['muted']}; }}
 
 /* ------------------------------------------------------------ tab strip */
@@ -197,7 +207,6 @@ QPushButton#keyCap[capturing="true"] {{
 /* ------------------------------------------------------- overlay tab */
 #hair {{ background: {t['hairline']}; border: none; }}
 #fieldLabel {{ font-size: 13px; color: {t['muted']}; }}
-#footerNote {{ font-size: 12px; color: {t['muted']}; }}
 #toggleLabel {{ font-size: 13px; color: {t['text2']}; }}
 #showOverlayBox {{
     background: {t['raised']}; border: 1px solid {t['border']}; border-radius: 9px;

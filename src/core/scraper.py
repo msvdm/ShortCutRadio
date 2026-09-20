@@ -50,6 +50,7 @@ class Found:
     name: str
     url: str
     detail: str = ""
+    site: str = ""          # the page it came from: where its logo lives
 
 
 # ------------------------------------------------------------------ helpers
@@ -279,7 +280,7 @@ def icecast_mounts(stream_url):
         br = s.get("bitrate") or s.get("audio_bitrate")
         ct = (s.get("server_type") or "").lower()
         detail = _detail(ct, {"icy-br": str(br) if br else ""})
-        out.append(Found(name, url, detail))
+        out.append(Found(name, url, detail, (s.get("server_url") or "").strip()))
     return out
 
 
@@ -303,7 +304,8 @@ def radio_browser(query, report=lambda m: None):
             bits = [r.get("codec") or "", f"{r['bitrate']} kbps" if r.get("bitrate") else "",
                     "radio-browser.info"]
             out.append(Found(r.get("name", "").strip() or name_from_url(url), url,
-                             " · ".join(b for b in bits if b)))
+                             " · ".join(b for b in bits if b),
+                             (r.get("homepage") or "").strip()))
     return out
 
 
@@ -350,6 +352,7 @@ def discover(url, report=lambda m: None):
         with ThreadPoolExecutor(max_workers=12) as pool:
             for got in pool.map(resolve, candidates):
                 for found, server in got:
+                    found.site = final          # where its logo will come from
                     results.append(found)
                     servers[_key(found.url)] = server
 

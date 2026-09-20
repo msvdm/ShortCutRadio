@@ -18,6 +18,7 @@ import mpv
 from .sources import folder_tracks, is_folder
 
 RETRY_MS = 5000
+VOLUME_MAX = 100        # mpv will amplify past this; nothing good comes of it
 
 # Ported from the NFSU2 radio's nfs-radio launcher: survive flaky networks.
 STREAM_OPTS = dict(
@@ -70,6 +71,7 @@ class Player(QObject):
 
     def __init__(self, sources, current=0, volume=70):
         super().__init__()
+        volume = max(0, min(VOLUME_MAX, volume))        # an older config may be louder
         self.sources = sources          # the config's list, shared by reference
         self.index = current if 0 <= current < len(sources) else 0
         self.error = ""
@@ -83,7 +85,7 @@ class Player(QObject):
         self.mpv = mpv.MPV(
             video=False, ytdl=False, idle=True, terminal=False,
             input_default_bindings=False, input_vo_keyboard=False,
-            volume=volume, volume_max=130, audio_client_name="ShortCutRadio",
+            volume=volume, volume_max=VOLUME_MAX, audio_client_name="ShortCutRadio",
             msg_level="all=warn", **STREAM_OPTS)
 
         for name in self._props:
@@ -149,6 +151,10 @@ class Player(QObject):
             "connecting": loaded and bool(p["core-idle"]) and not p["pause"],
             "volume": int(round(p["volume"] or 0)),
             "track": now_playing(p["metadata"], p["media-title"], p["path"], kind) if loaded else "",
+            # For the artwork: which file is playing, and where the station
+            # says it lives (most Icecast/SHOUTcast mounts announce icy-url).
+            "path": p["path"] if loaded else None,
+            "icy_url": _tag(p["metadata"], "icy-url") if loaded else "",
             "track_pos": (pos + 1) if (kind == "folder" and pos is not None and pos >= 0) else None,
             "track_count": count if kind == "folder" else None,
             "error": error,
@@ -241,7 +247,7 @@ class Player(QObject):
         self.mpv.command("stop")
 
     def set_volume(self, value):
-        self.mpv.volume = max(0, min(130, value))
+        self.mpv.volume = max(0, min(VOLUME_MAX, value))
 
     def change_volume(self, delta):
         self.set_volume((self.mpv.volume or 0) + delta)

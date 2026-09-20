@@ -11,12 +11,12 @@ from PySide6.QtCore import QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-from .widgets import draw_level_bars, level_bars_width, stripe_brush
+from .widgets import Meter, draw_art, fit_pixmap, draw_level_bars, level_bars_width
 
 PAD_X, PAD_Y, GAP = 14, 11, 2
-ART, ART_GAP, ART_BAND, ART_RADIUS = 34, 11, 4, 7
-ART_A, ART_B = "#2a2f37", "#333942"
-BARS, BAR_W, BAR_GAP, BAR_LEFT = (6, 14, 9), 2, 2, 10
+ART, ART_GAP, ART_RADIUS = 34, 11, 7
+BARS, BAR_W, BAR_GAP, BAR_LEFT = 3, 2, 2, 10
+BAR_LOW, BAR_HIGH = 4, 15
 BAR_COLOR = "#ff6a2b"
 FLASH_MS = 1600
 SCROLL_MS = 30         # ticker: 1 px per tick
@@ -67,6 +67,12 @@ class Overlay(QWidget):
         self.flash = ""
         self.lines = ("", "")
         self._tick = 0
+        self._art = None            # already scaled to the card's art box
+        self._art_key = 0
+        self.tile = ""              # what the generated art says, from the address
+
+        self.meter = Meter(BARS, self)
+        self.meter.tick.connect(self.update)
 
         self._flash_timer = QTimer(self, singleShot=True, interval=FLASH_MS)
         self._flash_timer.timeout.connect(self._end_flash)
@@ -82,12 +88,21 @@ class Overlay(QWidget):
         self.small_font = make_font(family, c["text_style"], c["track_size"], bold=False)
 
     # ------------------------------------------------------------------ state
-    def set_state(self, state):
+    def set_state(self, state, art=None, tile=""):
         old = self.state
         self.state = state
+        self.tile = tile
+        self.set_art(art)
         if old and old.get("volume") != state.get("volume") and state.get("loaded"):
             self.show_flash(f"Volume {state['volume']}%")
         self._relayout()
+
+    def set_art(self, pixmap):
+        key = pixmap.cacheKey() if pixmap is not None and not pixmap.isNull() else 0
+        if key != self._art_key or self._art_size() != (self._art.width() if self._art else -1):
+            self._art_key = key
+            self._art = fit_pixmap(pixmap, self._art_size(),
+                                   self.devicePixelRatioF(), dark=True)
 
     def show_flash(self, text):
         self.flash = text
@@ -108,6 +123,7 @@ class Overlay(QWidget):
             self._raise_timer.stop()
             self.hide()
         self._update_ticker()
+        self._sync_meter()
 
     def _second_line(self):
         s = self.state
@@ -144,11 +160,17 @@ class Overlay(QWidget):
             self.resize(w, h)
         self._reposition()
         self._update_ticker()
+        self._sync_meter()
         self.update()
 
     def _playing(self):
         s = self.state
         return bool(s.get("loaded")) and not s.get("paused") and not s.get("connecting")
+
+    def _sync_meter(self):
+        """Bars move only while the card is up and something is audible: this
+        repaints over a running game, so it must stop the moment it can."""
+        self.meter.set_running(self.isVisible() and self._playing())
 
     def _art_size(self):
         """Never taller than the card: the card's size comes from the settings."""
@@ -161,7 +183,7 @@ class Overlay(QWidget):
         """Width left for the text, once the art and the meter have their share."""
         right = self.width() - PAD_X
         if self._playing():
-            right -= level_bars_width(len(BARS), BAR_W, BAR_GAP) + BAR_LEFT
+            right -= level_bars_width(BARS, BAR_W, BAR_GAP) + BAR_LEFT
         return max(20, right - self._text_x())
 
     def _overflow(self):
@@ -203,6 +225,8 @@ class Overlay(QWidget):
 
     def reload_conf(self):
         self._apply_fonts()
+        self._art = fit_pixmap(self._art, self._art_size(),
+                               self.devicePixelRatioF(), dark=True)
         self._relayout()
 
     # ------------------------------------------------------------------ paint
@@ -221,16 +245,13 @@ class Overlay(QWidget):
 
         art = self._art_size()
         if art:
-            art_rect = QRectF(PAD_X, (self.height() - art) / 2, art, art)
-            art_path = QPainterPath()
-            art_path.addRoundedRect(art_rect, ART_RADIUS, ART_RADIUS)
-            p.save()
-            p.setClipPath(art_path)
-            p.fillRect(art_rect, stripe_brush(ART_BAND, ART_A, ART_B))
-            p.restore()
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            draw_art(p, QRectF(PAD_X, (self.height() - art) / 2, art, art),
+                     ART_RADIUS, self._art, self.tile, dark=True)
         if self._playing():
-            draw_level_bars(p, self.width() - PAD_X, self.height() / 2 + max(BARS) / 2,
-                            BARS, BAR_COLOR, BAR_W, BAR_GAP)
+            draw_level_bars(p, self.width() - PAD_X, self.height() / 2 + BAR_HIGH / 2,
+                            self.meter.values, BAR_COLOR, BAR_W, BAR_GAP,
+                            BAR_LOW, BAR_HIGH)
 
         title, second = self.lines
         room = self._room()

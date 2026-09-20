@@ -1,6 +1,7 @@
 """Wires the pieces together: config, player, hotkeys, overlay, window, tray."""
 
 import getpass
+import hashlib
 import locale
 import os
 import signal
@@ -11,15 +12,21 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from .core.config import Config, normalize_theme
+from .core.artfetch import clean_site
+from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, pretty
 from .core.player import Player
 from .gui import theme
+from .gui.artwork import Artwork
 from .gui.main_window import MainWindow
 from .gui.overlay import Overlay
-from .gui.tray import Tray, make_icon
+from .gui.tray import Tray, install_icon, make_icon
 
-INSTANCE_NAME = f"shortcutradio-{getpass.getuser()}"
+# One instance per config, not per machine: a test run on a scratch config
+# (XDG_CONFIG_HOME=..., see CLAUDE.md) must not hand its window to the real
+# ShortCutRadio and quit, and two portable copies are two apps.
+INSTANCE_NAME = (f"shortcutradio-{getpass.getuser()}-"
+                 f"{hashlib.sha1(data_dir().encode('utf-8')).hexdigest()[:8]}")
 VOLUME_STEP = 5
 SAVE_DELAY_MS = 1500
 
@@ -29,11 +36,13 @@ class App:
         self.qapp = qapp
         self.icon = make_icon()
         qapp.setWindowIcon(self.icon)
+        install_icon()          # so the desktop's menu shows it too
         self.config = Config()
         cfg = self.config
         self.window = None
         self.apply_theme()
 
+        self.artwork = Artwork()
         self.player = Player(cfg["sources"], cfg["current"], cfg["volume"])
         self.hotkeys = Hotkeys(cfg["shortcuts"])
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
@@ -45,6 +54,7 @@ class App:
         self._save_timer.timeout.connect(self.save)
 
         self.player.changed.connect(self._on_state)
+        self.artwork.changed.connect(lambda: self.refresh_state())
         self.hotkeys.triggered.connect(self._on_action)
         self.hotkeys.captured.connect(self.window.on_captured)
 
@@ -76,13 +86,42 @@ class App:
 
     # ------------------------------------------------------------------ events
     def _on_state(self, s):
-        self.overlay.set_state(s)
-        self.window.update_state(s)
-        if self.tray:
-            self.tray.update_state(s)
+        self._push(s)
+        self._learn_site(s)
         cfg = self.config
         if cfg["volume"] != s["volume"] or cfg["current"] != s["index"]:
             cfg["volume"], cfg["current"] = s["volume"], s["index"]
+            self._save_timer.start()
+
+    def _push(self, s):
+        """One state, one artwork lookup, three places that show it.
+
+        `tile` is what the generated art says when there is no picture. It
+        comes from the source's address, so renaming a station leaves its
+        picture alone.
+        """
+        src = self.player.current_source()
+        art = self.artwork.for_source(src, s.get("path") or "")
+        tile = self.artwork.label_for(src)
+        self.overlay.set_state(s, art, tile)
+        self.window.update_state(s, art, tile)
+        if self.tray:
+            self.tray.update_state(s, art, tile)
+
+    def refresh_state(self):
+        self._push(self.player.snapshot())
+
+    def _learn_site(self, s):
+        """Most Icecast/SHOUTcast mounts announce their home page. That is
+        where the logo lives, and a station seeded from the NFSU2 list has no
+        other way of telling us."""
+        src = self.player.current_source()
+        if not src or src.get("kind") != "stream" or src.get("site"):
+            return
+        site = clean_site(s.get("icy_url") or "")
+        if site:
+            src["site"] = site
+            self.artwork.forget(src)        # drops the "no logo" marker
             self._save_timer.start()
 
     def _on_action(self, action):
@@ -131,7 +170,7 @@ class App:
     def shortcuts_changed(self):
         self.hotkeys.set_bindings(self.config["shortcuts"])
         self.overlay.hint_key = pretty(self.config["shortcuts"]["play_pause"])
-        self.overlay.set_state(self.player.snapshot())
+        self.refresh_state()
         self.save()
 
     def _sources_edited(self, keep):
@@ -155,6 +194,15 @@ class App:
         keep = self.player.current_source()
         self.config["sources"][:] = order
         self._sources_edited(keep)
+
+    def artwork_changed(self, src):
+        self.artwork.forget(src)
+        self._sources_edited(self.player.current_source())
+
+    def site_changed(self, src):
+        """The author said where the station lives: look for its logo again."""
+        self.artwork.refetch(src)
+        self._sources_edited(self.player.current_source())
 
     def rename_source(self, src, name):
         src["name"] = name

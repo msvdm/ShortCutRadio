@@ -4,13 +4,26 @@ Everything here reads `theme.tokens()` at paint time, so a theme change only
 needs a repaint, not a rebuild.
 """
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QPainter,
-                           QPainterPath, QPixmap, QPolygonF)
+import hashlib
+import re
+
+from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QImage, QPainter,
+                           QPainterPath, QPen, QPixmap, QPolygonF)
 from PySide6.QtWidgets import (QAbstractButton, QComboBox, QFontComboBox,
                                QSizePolicy, QWidget)
 
+from ..core import levels
 from . import theme
+
+METER_MS = 70           # ~14 frames a second: alive, but nearly free
+PROBE = 96              # art is measured on a copy this big, not full size
+TRIM_TOL = 14           # how near the corner's colour still counts as border
+TRIM_MAX = 0.42         # never trim more than this much off one side
+
+# The overlay and the tray menu are drawn dark whatever the theme is.
+DARK_TILE = {"tile_sat": 120, "tile_val": 96, "tile_text": "#f1f3f6",
+             "art_dark": "#1b1f26", "art_light": "#e8eaee"}
 
 MONO = None
 
@@ -28,39 +41,168 @@ def mono_font(px, spacing=0.0, bold=False):
     return f
 
 
-def stripe_brush(band, a, b):
-    """The 45° two-tone band fill the mock uses wherever station art will go."""
-    size = band * 2
-    pm = QPixmap(size * 2, size * 2)
-    pm.fill(QColor(a))
-    p = QPainter(pm)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(b))
-    p.translate(0, 0)
-    p.rotate(-45)
-    for i in range(-4, 8):
-        p.drawRect(QRectF(i * size, -size * 4, band, size * 12))
+def monogram(name):
+    """One or two letters to stand for a source that has no picture."""
+    words = [w for w in re.split(r"[\s\-–—_/|:.]+", name or "")
+             if w and not w.isdigit()]
+    # Filter first, then take two, or "Drum & Bass" spends one of them on "&".
+    letters = [w[0] for w in words if w[0].isalnum()][:2]
+    if len(letters) < 2 and words:
+        # One word: two of its letters read better than a lone initial.
+        pair = [c for c in words[0] if c.isalnum()][:2]
+        letters = pair if len(pair) == 2 else letters
+    return ("".join(letters) or (name or "?")[:1]).upper()
+
+
+def tile_color(name, sat, val):
+    """A stable colour per source: one station is always the same tile."""
+    digest = hashlib.sha1((name or "").encode("utf-8")).hexdigest()[:8]
+    return QColor.fromHsv(int(digest, 16) % 360, sat, val)
+
+
+def _probe(pm):
+    """A small ARGB copy to measure. Scanning a 600 px logo pixel by pixel in
+    Python is far too slow; at this size it is a few milliseconds."""
+    img = pm.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    if max(img.width(), img.height()) > PROBE:
+        img = img.scaled(PROBE, PROBE, Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    return img
+
+
+def _border_test(img):
+    """Is this pixel part of the flat border? -- transparent, or the same
+    colour the corner is."""
+    ref = img.pixelColor(0, 0)
+    opaque_ref = ref.alpha() >= 12
+
+    def is_border(x, y):
+        c = img.pixelColor(x, y)
+        if c.alpha() < 12:
+            return True
+        if not opaque_ref:
+            return False
+        return (abs(c.red() - ref.red()) + abs(c.green() - ref.green())
+                + abs(c.blue() - ref.blue())) <= TRIM_TOL
+
+    return is_border
+
+
+def content_box(img):
+    """What is left of `img` once a flat or transparent border is trimmed.
+
+    Logos are routinely published inside a lot of empty space; without this
+    they land in the art box two sizes too small.
+    """
+    w, h = img.width(), img.height()
+    if w < 4 or h < 4:
+        return None
+    is_border = _border_test(img)
+    # One flat colour edge to edge: there is no content to trim down to.
+    # all() stops at the first pixel that differs, so this is normally instant.
+    if all(is_border(x, y) for x in range(w) for y in range(h)):
+        return None
+    left, right, top, bottom = 0, w - 1, 0, h - 1
+    limit_x, limit_y = int(w * TRIM_MAX), int(h * TRIM_MAX)
+    while left < limit_x and all(is_border(left, y) for y in range(h)):
+        left += 1
+    while right > w - 1 - limit_x and all(is_border(right, y) for y in range(h)):
+        right -= 1
+    while top < limit_y and all(is_border(x, top) for x in range(w)):
+        top += 1
+    while bottom > h - 1 - limit_y and all(is_border(x, bottom) for x in range(w)):
+        bottom -= 1
+    if right - left < 2 or bottom - top < 2:
+        return None
+    return left, top, right - left + 1, bottom - top + 1
+
+
+def backdrop(img, dark):
+    """What the picture sits on, so a shape that does not fill the square --
+    or a white logo on nothing at all -- still reads.
+
+    A logo with an opaque border extends that border, which looks like one
+    card. A cut-out one gets a panel chosen to contrast with it.
+    """
+    edge, light, n = [], 0, 0
+    w, h = img.width(), img.height()
+    for x, y in ([(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
+                 + [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]):
+        c = img.pixelColor(x, y)
+        if c.alpha() >= 200:
+            edge.append((c.red(), c.green(), c.blue()))
+    for x in range(0, w, 3):
+        for y in range(0, h, 3):
+            c = img.pixelColor(x, y)
+            if c.alpha() >= 100:
+                n += 1
+                light += c.lightness()
+    if len(edge) > (w + h):             # a real border, not a stray pixel
+        return QColor(*(sum(v) // len(edge) for v in zip(*edge)))
+    t = DARK_TILE if dark else theme.tokens()
+    pale = n and light / n > 140
+    return QColor(t["art_dark"] if pale else t["art_light"])
+
+
+def fit_pixmap(pm, size, dpr=1.0, dark=False):
+    """A finished square tile: trimmed, fitted whole, on its backdrop.
+
+    `size` is in points and `dpr` the screen's ratio, or a 4K desktop shows a
+    blurred thumbnail. All of it happens once, here -- never in a paintEvent
+    the meter calls fourteen times a second.
+    """
+    if pm is None or pm.isNull() or size <= 0:
+        return None
+    px = max(1, round(size * dpr))
+    probe = _probe(pm)
+    box = content_box(probe)
+    if box:                             # map the box back to the full picture
+        k = pm.width() / probe.width()
+        pm = pm.copy(*(max(0, round(v * k)) for v in box))
+    scaled = pm.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    out = QPixmap(px, px)
+    out.fill(backdrop(probe, dark))
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.drawPixmap((px - scaled.width()) // 2, (px - scaled.height()) // 2, scaled)
     p.end()
-    return QBrush(pm)
+    out.setDevicePixelRatio(dpr)
+    return out
 
 
-def draw_art(painter, rect, radius, band):
-    t = theme.tokens()
+def draw_art(painter, rect, radius, pixmap=None, name="", dark=False):
+    """The art box: the picture if there is one, else a tile of initials."""
+    r = QRectF(rect)
     path = QPainterPath()
-    path.addRoundedRect(QRectF(rect), radius, radius)
+    path.addRoundedRect(r, radius, radius)
     painter.save()
     painter.setClipPath(path)
-    painter.fillRect(QRectF(rect), stripe_brush(band, t["art_a"], t["art_b"]))
+    if pixmap is not None and not pixmap.isNull():
+        painter.drawPixmap(r.topLeft(), pixmap)
+    else:
+        t = DARK_TILE if dark else theme.tokens()
+        painter.fillRect(r, tile_color(name, int(t["tile_sat"]), int(t["tile_val"])))
+        f = QFont(painter.font())
+        f.setBold(True)
+        f.setPixelSize(max(8, int(r.height() * 0.4)))
+        painter.setFont(f)
+        painter.setPen(QColor(t["tile_text"]))
+        painter.drawText(r, Qt.AlignmentFlag.AlignCenter, monogram(name))
     painter.restore()
 
 
-def draw_level_bars(painter, right, baseline, heights, color, width, gap):
-    """A static level meter, right-aligned, sitting on `baseline`."""
+def draw_level_bars(painter, right, baseline, values, color, width, gap, low, high):
+    """The level meter, right-aligned, standing on `baseline`.
+
+    `values` are 0..1 from core.levels; `low`..`high` is their range in pixels.
+    """
     painter.save()
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(color))
-    x = right - (len(heights) * width + (len(heights) - 1) * gap)
-    for h in heights:
+    x = right - level_bars_width(len(values), width, gap)
+    for v in values:
+        h = low + (high - low) * max(0.0, min(1.0, v))
         painter.drawRect(QRectF(x, baseline - h, width, h))
         x += width + gap
     painter.restore()
@@ -70,25 +212,109 @@ def level_bars_width(count, width, gap):
     return count * width + (count - 1) * gap
 
 
-class ArtPlaceholder(QWidget):
-    """Where station art would go, if the app had a source for it."""
+class Meter(QObject):
+    """The clock behind the level bars -- see core/levels.py for the maths.
 
-    def __init__(self, size, radius, band, caption=""):
+    It only runs while something is actually playing and the bars are on
+    screen, so an idle or hidden ShortCutRadio costs nothing.
+    """
+
+    tick = Signal()
+
+    def __init__(self, count, parent=None, interval=METER_MS):
+        super().__init__(parent)
+        self.values = levels.new_levels(count)
+        self._targets = levels.new_targets(count)
+        self._tick = 0
+        self._timer = QTimer(self, interval=interval)
+        self._timer.timeout.connect(self._advance)
+
+    def set_running(self, on):
+        if on and not self._timer.isActive():
+            self._timer.start()
+        elif not on:
+            self._timer.stop()
+
+    def _advance(self):
+        self._tick += 1
+        self.values, self._targets = levels.step(self.values, self._targets, self._tick)
+        self.tick.emit()
+
+
+class ArtView(QWidget):
+    """The source's picture, or its tile. Fixed square, rounded corners."""
+
+    def __init__(self, size, radius, dark=False):
         super().__init__()
         self.setFixedSize(size, size)
         self.radius = radius
-        self.band = band
-        self.caption = caption
+        self.dark = dark            # the tray header does not follow the theme
+        self._pm = None
+        self._name = ""
+        self._key = 0
+
+    def set_art(self, pixmap, name=""):
+        # Compare the source pixmap, not the scaled copy: the scaling is the
+        # expensive half and it must not run on every state update.
+        key = pixmap.cacheKey() if pixmap is not None and not pixmap.isNull() else 0
+        if key == self._key and name == self._name:
+            return
+        self._key, self._name = key, name
+        self._pm = fit_pixmap(pixmap, self.width(), self.devicePixelRatioF(),
+                              self.dark)
+        self.update()
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        draw_art(p, self.rect(), self.radius, self.band)
-        if self.caption:
-            p.setFont(mono_font(9))
-            p.setPen(QColor(theme.tokens()["muted_small"]))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.caption)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        draw_art(p, self.rect(), self.radius, self._pm, self._name, self.dark)
         p.end()
+
+
+class CloseButton(QAbstractButton):
+    """The window's only chrome, now that it has no titlebar."""
+
+    def __init__(self, size=26, parent=None):
+        super().__init__(parent)
+        self.d = size
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Close – ShortCutRadio keeps playing in the tray")
+
+    def sizeHint(self):
+        return QSize(self.d, self.d)
+
+    def paintEvent(self, _event):
+        t = theme.tokens()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        glyph = t["muted"]
+        if self.isDown():
+            p.setBrush(QColor(t["accent"]))
+            p.drawEllipse(QRectF(0, 0, self.d, self.d))
+            glyph = t["on_accent"]
+        elif self.underMouse():
+            p.setBrush(QColor(t["hover_row"]))
+            p.drawEllipse(QRectF(0, 0, self.d, self.d))
+            glyph = t["text"]
+        pen = QPen(QColor(glyph), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        a = self.d * 0.32
+        c = self.d / 2
+        p.drawLine(QPointF(c - a / 2, c - a / 2), QPointF(c + a / 2, c + a / 2))
+        p.drawLine(QPointF(c + a / 2, c - a / 2), QPointF(c - a / 2, c + a / 2))
+        p.end()
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
 
 
 class PillSwitch(QAbstractButton):

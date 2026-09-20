@@ -102,6 +102,7 @@ class AddStreamDialog(QDialog):
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
             it.setCheckState(0, Qt.CheckState.Checked)
             it.setToolTip(2, f.url)
+            it.setData(0, Qt.ItemDataRole.UserRole, f.site)
             self.tree.addTopLevelItem(it)
         self.tree.blockSignals(False)
         self._update_ok()
@@ -122,6 +123,9 @@ class AddStreamDialog(QDialog):
         self.toggle_btn.setText("Select none" if checked else "Select all")
 
     def accept(self):
-        self.selected = [(it.text(0).strip() or it.text(2), it.text(2)) for it in self._items()
+        """(name, url, site) per ticked row -- the site is where its logo lives."""
+        self.selected = [(it.text(0).strip() or it.text(2), it.text(2),
+                          it.data(0, Qt.ItemDataRole.UserRole) or "")
+                         for it in self._items()
                          if it.checkState(0) == Qt.CheckState.Checked]
         super().accept()

@@ -2,12 +2,15 @@
 
 Closing it only hides it; ShortCutRadio keeps playing from the tray.
 
-The tab strip is built from plain buttons rather than a QTabBar because two of
-the tabs put something of their own at the right end of that same strip -- the
-list hint on Sources, `Reset to default` on Overlay.
+It wears no titlebar, so the window is its own chrome: a transparent carrier
+(#window) holds a resize margin around the card (#shell), the card is dragged
+by any empty part of it, and the only button is the × in the hero. The tab
+strip is built from plain buttons rather than a QTabBar because two of the tabs
+put something of their own at the right end of that same strip -- the list hint
+on Sources, `Reset to default` on Overlay.
 """
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontDatabase, QFontMetrics,
                            QKeySequence, QPainter, QPainterPath)
 from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QFileDialog, QFrame,
@@ -17,14 +20,16 @@ from PySide6.QtWidgets import (QAbstractItemView, QColorDialog, QFileDialog, QFr
                                QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from ..core.config import DEFAULTS, opacity_from_percent, transparency_percent
+from ..core.artfetch import clean_site, site_for_stream
 from ..core.hotkeys import has_modifier, pretty
+from ..core.player import VOLUME_MAX
 from ..core.sources import describe, folder_tracks, is_folder, make_folder, make_stream
 from . import theme
 from .add_stream import AddStreamDialog
 from .overlay import overlay_family, pick_style
-from .widgets import (ArtPlaceholder, ElidedLabel, PillSwitch, RoundPlayButton,
-                      ThemedComboBox, ThemedFontComboBox, TriangleButton,
-                      draw_level_bars, level_bars_width, mono_font)
+from .widgets import (ArtView, CloseButton, ElidedLabel, Meter, PillSwitch,
+                      RoundPlayButton, ThemedComboBox, ThemedFontComboBox,
+                      TriangleButton, draw_level_bars, level_bars_width, mono_font)
 
 SHORTCUT_ROWS = [
     ("overlay", "Overlay on / off"),
@@ -45,12 +50,32 @@ HELP_TEXT = ("The keyboard shortcuts work only while the overlay is active. If y
              "to free them up for other purposes - such as typing - disable the overlay; "
              "the music will not stop.")
 LIST_HINT = "drag to reorder · double-click to play"
-SIZE_NOTE = ("The card's size comes from these settings only, "
-             "so it never jumps as the track changes.")
+# Qt copies whatever is put in an item, so SOURCE_ROLE is a *copy* of the
+# source -- fine for drawing the row, useless to write to. Anything that edits
+# a source goes through INDEX_ROLE to the real dict in the config.
 SOURCE_ROLE = Qt.ItemDataRole.UserRole
 PLAYING_ROLE = Qt.ItemDataRole.UserRole + 1
-ROW_BARS = (8, 16, 11, 14)
+INDEX_ROLE = Qt.ItemDataRole.UserRole + 2
+ROW_BARS, ROW_BAR_LOW, ROW_BAR_HIGH = 4, 5, 17
 NOTE_MS = 4000
+RESIZE_MARGIN = 6           # the transparent grip around the card
+CLOSE_BTN, CLOSE_INSET = 26, 10
+# Every word-wrapped label needs a pinned wrapping width. Qt asks such a label
+# how tall it would be at its *minimum* width, and an unpinned one answers with
+# a dozen lines -- which the window then grows to fit and never gives back.
+WRAP_W = 560
+ART_EXTS = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.svg)"
+
+CURSORS = {
+    (Qt.Edge.LeftEdge).value: Qt.CursorShape.SizeHorCursor,
+    (Qt.Edge.RightEdge).value: Qt.CursorShape.SizeHorCursor,
+    (Qt.Edge.TopEdge).value: Qt.CursorShape.SizeVerCursor,
+    (Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeVerCursor,
+    (Qt.Edge.LeftEdge | Qt.Edge.TopEdge).value: Qt.CursorShape.SizeFDiagCursor,
+    (Qt.Edge.RightEdge | Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeFDiagCursor,
+    (Qt.Edge.RightEdge | Qt.Edge.TopEdge).value: Qt.CursorShape.SizeBDiagCursor,
+    (Qt.Edge.LeftEdge | Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeBDiagCursor,
+}
 
 
 def repolish(w):
@@ -63,6 +88,10 @@ class SourceDelegate(QStyledItemDelegate):
     """One source per row: an accent bar when it plays, name, then describe()."""
 
     PAD_X, PAD_Y, GAP, BAR_W, BAR_H = 12, 11, 12, 3, 26
+
+    def __init__(self, parent, window):
+        super().__init__(parent)
+        self.window_ = window       # for the meter the playing row draws
 
     def _fonts(self, option, playing):
         name = QFont(option.font)
@@ -108,10 +137,11 @@ class SourceDelegate(QStyledItemDelegate):
         x += self.BAR_W + self.GAP
 
         right = r.right() - self.PAD_X
-        if playing:
-            width = level_bars_width(len(ROW_BARS), 3, 3)
-            draw_level_bars(painter, right, r.center().y() + 8, ROW_BARS, t["accent"], 3, 3)
-            right -= width + 10
+        if playing and self.window_.sounding:
+            draw_level_bars(painter, right, r.center().y() + ROW_BAR_HIGH / 2,
+                            self.window_.meter.values, t["accent"], 3, 3,
+                            ROW_BAR_LOW, ROW_BAR_HIGH)
+            right -= level_bars_width(ROW_BARS, 3, 3) + 10
         room = max(20, right - x)
 
         name_font, sub_font = self._fonts(option, playing)
@@ -198,43 +228,33 @@ class TabButton(QPushButton):
 
 
 class Hero(QWidget):
-    """Now playing, with the transport. Full on Sources, compact elsewhere."""
+    """Now playing, with the transport. The same on every tab."""
 
-    def __init__(self, app, compact):
+    def __init__(self, app):
         super().__init__()
-        self.compact = compact
-        self.setObjectName("heroCompact" if compact else "hero")
+        self.setObjectName("hero")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        if compact:
-            lay.setContentsMargins(20, 14, 20, 14)
-            lay.setSpacing(14)
-            lay.addWidget(ArtPlaceholder(40, 8, 5))
-        else:
-            lay.setContentsMargins(20, 20, 20, 20)
-            lay.setSpacing(18)
-            lay.addWidget(ArtPlaceholder(88, 10, 6, "station\nart"))
+        # The right margin keeps the transport out from under the × in the
+        # corner, even when the window is at its narrowest.
+        lay.setContentsMargins(20, 20, 20 + CLOSE_BTN + CLOSE_INSET, 20)
+        lay.setSpacing(18)
+        self.art = ArtView(88, 10)
+        lay.addWidget(self.art)
 
         info = QVBoxLayout()
-        info.setSpacing(2 if compact else 6)
-        if not compact:
-            self.status = QLabel("")
-            self.status.setObjectName("heroStatus")
-            self.status.setFont(mono_font(10, spacing=0.16))
-            info.addWidget(self.status)
+        info.setSpacing(6)
+        self.status = QLabel("")
+        self.status.setObjectName("heroStatus")
+        self.status.setFont(mono_font(10, spacing=0.16))
+        info.addWidget(self.status)
         self.name = ElidedLabel("ShortCutRadio")
-        self.name.setObjectName("heroCompactName" if compact else "heroName")
+        self.name.setObjectName("heroName")
         self.track = ElidedLabel("")
-        self.track.setObjectName("heroCompactTrack" if compact else "heroTrack")
+        self.track.setObjectName("heroTrack")
         info.addWidget(self.name)
         info.addWidget(self.track)
-        lay.addLayout(info, 1)
-
-        if compact:
-            self.play = RoundPlayButton(30)
-            self.play.clicked.connect(app.player.toggle)
-            lay.addWidget(self.play)
-            return
+        lay.addLayout(info, 2)
 
         right = QVBoxLayout()
         right.setSpacing(12)
@@ -261,7 +281,7 @@ class Hero(QWidget):
         vol.setSpacing(10)
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setToolTip("Volume")
-        self.volume.setRange(0, 130)
+        self.volume.setRange(0, VOLUME_MAX)
         self.volume.setFixedWidth(156)
         self.vol_label = QLabel("")
         self.vol_label.setObjectName("heroVolume")
@@ -271,25 +291,40 @@ class Hero(QWidget):
         vol.addWidget(self.volume)
         vol.addWidget(self.vol_label)
         right.addLayout(vol)
+        # A stretch on each side centres the controls in what is left between
+        # the name and the ×, instead of pinning them to the right edge.
+        lay.addStretch(1)
         lay.addLayout(right)
+        lay.addStretch(1)
 
 
 class MainWindow(QWidget):
     def __init__(self, app):
-        super().__init__()
+        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.app = app
         self.capturing = None
+        self.sounding = False           # something is audible right now
+        self._drag_from = None
+        self.meter = Meter(ROW_BARS, self)
         self.setObjectName("window")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMouseTracking(True)
         self.setWindowTitle("ShortCutRadio")
         self.setWindowIcon(app.icon)
-        self.resize(900, 560)
+        # A constant minimum, not the one the current page happens to need.
+        # Each tab has a different layout minimum, and a frameless window that
+        # changes its size hints gets re-sized by the window manager: switching
+        # to Overlay and back grew the window by a hundred pixels every round
+        # trip. Pinning it keeps the hints still. The height fits the Overlay
+        # tab, which is the densest page now that the hero is on all three.
+        self.setMinimumSize(640 + 2 * RESIZE_MARGIN, 600 + 2 * RESIZE_MARGIN)
+        self.resize(900 + 2 * RESIZE_MARGIN, 600 + 2 * RESIZE_MARGIN)
 
-        self.hero = Hero(app, compact=False)
-        self.hero_compact = Hero(app, compact=True)
+        self.hero = Hero(app)
         self.hero.volume.valueChanged.connect(self._volume_moved)
 
         self.tabs = [TabButton("Sources"), TabButton("Shortcuts"), TabButton("Overlay")]
-        strip = QWidget()
+        strip = self.strip = QWidget()
         strip.setObjectName("tabStrip")
         strip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         sl = QHBoxLayout(strip)
@@ -311,14 +346,27 @@ class MainWindow(QWidget):
         self._note_timer.timeout.connect(lambda: self.hint.setText(LIST_HINT))
 
         self.pages = [self._sources_page(), self._shortcuts_page(), self._overlay_page()]
-        lay = QVBoxLayout(self)
+        self.shell = QWidget(self)
+        self.shell.setObjectName("shell")
+        self.shell.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        lay = QVBoxLayout(self.shell)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self.hero)
-        lay.addWidget(self.hero_compact)
         lay.addWidget(strip)
         for p in self.pages:
             lay.addWidget(p, 1)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(*([RESIZE_MARGIN] * 4))
+        outer.addWidget(self.shell)
+
+        # The only chrome left. Closing hides to the tray; the music goes on.
+        self.close_btn = CloseButton(CLOSE_BTN, self.shell)
+        self.close_btn.clicked.connect(self.close)
+        self.close_btn.raise_()
+
+        self.meter.tick.connect(lambda: self.list.viewport().update())
 
         self.refresh_look()
         self.refresh_shortcuts()
@@ -330,10 +378,9 @@ class MainWindow(QWidget):
         for i, (b, p) in enumerate(zip(self.tabs, self.pages)):
             b.set_active(i == n)
             p.setVisible(i == n)
-        self.hero.setVisible(n == 0)
-        self.hero_compact.setVisible(n == 1)
         self.hint.setVisible(n == 0)
         self.reset_btn.setVisible(n == 2)
+        self._sync_meter()
 
     # ------------------------------------------------------------------ sources
     def _sources_page(self):
@@ -344,7 +391,7 @@ class MainWindow(QWidget):
 
         self.list = QListWidget()
         self.list.setObjectName("srcList")
-        self.list.setItemDelegate(SourceDelegate(self.list))
+        self.list.setItemDelegate(SourceDelegate(self.list, self))
         self.list.setSpacing(3)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
@@ -392,12 +439,13 @@ class MainWindow(QWidget):
             warn = QLabel(f"Global shortcuts are unavailable: {self.app.hotkeys.error}")
             warn.setObjectName("warnText")
             warn.setWordWrap(True)
+            warn.setMinimumWidth(WRAP_W)
             grid.addWidget(warn, nrows, 0, 1, 2)
             nrows += 1
         help_label = QLabel(HELP_TEXT)
         help_label.setObjectName("helpText")
         help_label.setWordWrap(True)
-        help_label.setMaximumWidth(560)
+        help_label.setFixedWidth(WRAP_W)
         grid.addWidget(help_label, nrows, 0, 1, 2)
         grid.setRowStretch(nrows + 1, 1)
         return page
@@ -518,10 +566,7 @@ class MainWindow(QWidget):
         lay.addWidget(self._hairline())
         footer = QHBoxLayout()
         footer.setSpacing(14)
-        note = QLabel(SIZE_NOTE)
-        note.setObjectName("footerNote")
-        note.setWordWrap(True)
-        footer.addWidget(note, 1)
+        footer.addStretch(1)
         box = QFrame()
         box.setObjectName("showOverlayBox")
         box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
@@ -621,8 +666,14 @@ class MainWindow(QWidget):
         self.refresh_look()
 
     # ------------------------------------------------------------------ state
-    def update_state(self, s):
+    def update_state(self, s, art=None, tile=""):
         self._state = s
+        sounding = s["loaded"] and not s["paused"] and not s["connecting"]
+        if sounding != self.sounding:
+            # The meter stops on pause, so nothing else would repaint the row
+            # that is still showing its last frame of bars.
+            self.sounding = sounding
+            self.list.viewport().update()
         for i in range(self.list.count()):
             it = self.list.item(i)
             playing = s["loaded"] and i == s["index"]
@@ -630,12 +681,12 @@ class MainWindow(QWidget):
                 it.setData(PLAYING_ROLE, playing)
         status, name, track = self._hero_lines(s)
         self.hero.status.setText(status)
-        for h in (self.hero, self.hero_compact):
-            h.name.setText(name)
-            h.track.setText(track)
+        self.hero.name.setText(name)
+        self.hero.track.setText(track)
+        self.hero.art.set_art(art, tile)
+        self._sync_meter()
         playing = s["loaded"] and not s["paused"]
         self.hero.play.set_playing(playing)
-        self.hero_compact.play.set_playing(playing)
         self.hero.track_next.setEnabled(s["kind"] == "folder" and s["loaded"])
         if not self.hero.volume.isSliderDown():
             self.hero.volume.blockSignals(True)
@@ -723,18 +774,31 @@ class MainWindow(QWidget):
     def refresh_sources(self):
         self.list.blockSignals(True)
         self.list.clear()
-        for src in self.app.config["sources"]:
+        for i, src in enumerate(self.app.config["sources"]):
             it = QListWidgetItem(src["name"])
             it.setData(SOURCE_ROLE, src)
+            it.setData(INDEX_ROLE, i)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsDragEnabled)
             self.list.addItem(it)
         self.list.blockSignals(False)
         if hasattr(self, "_state"):
-            self.update_state(self.app.player.snapshot())
+            self.app.refresh_state()
 
     def _rows_moved(self, *_):
-        order = [self.list.item(i).data(SOURCE_ROLE) for i in range(self.list.count())]
-        self.app.reorder_sources(order)
+        """The rows carry copies, so reorder the real dicts by their index.
+
+        Handing the copies back would replace every source in the config with
+        a new object, and the player -- which holds on to the one that is
+        playing -- would no longer recognise it and would stop.
+        """
+        srcs = self.app.config["sources"]
+        order = []
+        for i in range(self.list.count()):
+            n = self.list.item(i).data(INDEX_ROLE)
+            if isinstance(n, int) and 0 <= n < len(srcs):
+                order.append(srcs[n])
+        if len(order) == len(srcs):
+            self.app.reorder_sources(order)
 
     def _selected_rows(self):
         return sorted({self.list.row(it) for it in self.list.selectedItems()})
@@ -744,7 +808,10 @@ class MainWindow(QWidget):
         if it is None:
             return
         row = self.list.row(it)
-        src = it.data(SOURCE_ROLE)
+        srcs = self.app.config["sources"]
+        if not 0 <= row < len(srcs):
+            return
+        src = srcs[row]         # the real source; the item only holds a copy
         m = QMenu(self)
         m.addAction("Play", lambda: self.app.player.play_source(row))
         m.addAction("Rename…", lambda: self.rename(row))
@@ -754,8 +821,43 @@ class MainWindow(QWidget):
             sh.setChecked(bool(src.get("shuffle")))
             sh.toggled.connect(lambda on: self.app.set_shuffle(src, on))
         m.addSeparator()
+        if not is_folder(src):
+            m.addAction("Station page…", lambda: self.set_site(src))
+        m.addAction("Set artwork…", lambda: self.set_artwork(src))
+        if src.get("art"):
+            m.addAction("Clear artwork", lambda: self.clear_artwork(src))
+        m.addSeparator()
         m.addAction("Remove", self.remove_selected)
         m.exec(self.list.viewport().mapToGlobal(pos))
+
+    def set_site(self, src):
+        """Where the station lives -- its logo is taken from that page.
+
+        Add Stream records this by itself. A station that arrived as a bare
+        URL cannot know it: nothing about `lb-hls.cdn.bg` says `binar.bg`,
+        and guessing lands on the CDN's own logo.
+        """
+        current = src.get("site") or site_for_stream(src.get("target") or "")
+        site, ok = QInputDialog.getText(
+            self, "Station page", f"Where “{src['name']}” lives on the web.\n"
+            "Its logo is taken from that page; leave it empty to guess.",
+            text=current)
+        if not ok:
+            return
+        src["site"] = clean_site(site)
+        self.app.site_changed(src)
+        self._note("Looking for the station's logo…")
+
+    def set_artwork(self, src):
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Picture for “{src['name']}”", "", ART_EXTS)
+        if path:
+            src["art"] = path
+            self.app.artwork_changed(src)
+
+    def clear_artwork(self, src):
+        src.pop("art", None)
+        self.app.artwork_changed(src)
 
     def rename(self, row):
         src = self.app.config["sources"][row]
@@ -782,7 +884,104 @@ class MainWindow(QWidget):
     def add_stream(self):
         dlg = AddStreamDialog(self)
         if dlg.exec() and dlg.selected:
-            self.app.add_sources([make_stream(n, u) for n, u in dlg.selected])
+            self.app.add_sources([make_stream(n, u, site) for n, u, site in dlg.selected])
+
+    # ------------------------------------------------------------------ meter
+    def _sync_meter(self):
+        """The bars cost a repaint every 70 ms, so only run them when they
+        are on screen and something is actually playing."""
+        self.meter.set_running(self.isVisible() and self.pages[0].isVisible()
+                               and self.sounding)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_meter()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_meter()
+
+    # ------------------------------------------------------------------ chrome
+    def _edges(self, pos):
+        """Which window edges `pos` sits on, inside the resize margin."""
+        edges = Qt.Edge(0)
+        if pos.x() <= RESIZE_MARGIN:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= self.width() - RESIZE_MARGIN:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() <= RESIZE_MARGIN:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= self.height() - RESIZE_MARGIN:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    def _on_titlebar(self, pos):
+        """The hero and the tab strip stand in for the titlebar.
+
+        Dragging and double-clicking are limited to them: empty space further
+        down belongs to the page, and grabbing the window from under the
+        source list would be a surprise.
+        """
+        local = self.shell.mapFrom(self, pos)
+        return any(w.geometry().contains(local) for w in (self.hero, self.strip))
+
+    def mousePressEvent(self, event):
+        """Presses the children did not want: the edges resize, the top drags.
+
+        Only plain widgets let a press through, so the list keeps its
+        drag-to-reorder and every button keeps its click.
+        """
+        pos = event.position().toPoint()
+        if event.button() != Qt.MouseButton.LeftButton or self.isMaximized():
+            return super().mousePressEvent(event)
+        handle = self.windowHandle()
+        edges = self._edges(pos)
+        if edges and handle is not None:
+            handle.startSystemResize(edges)
+        elif not edges and not self._on_titlebar(pos):
+            return super().mousePressEvent(event)
+        elif handle is None or not handle.startSystemMove():
+            # No help from the window manager: carry it ourselves.
+            self._drag_from = event.globalPosition().toPoint() - self.pos()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_from is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_from)
+            return
+        shape = CURSORS.get(self._edges(event.position().toPoint()).value,
+                            Qt.CursorShape.ArrowCursor)
+        self.setCursor(shape)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_from = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.isMaximized():
+            self.showNormal()
+        elif self._on_titlebar(event.position().toPoint()):
+            self.showMaximized()
+
+    def changeEvent(self, event):
+        # Maximised there is nothing to grip, and the margin would show as a
+        # transparent frame around the card.
+        if event.type() == event.Type.WindowStateChange and self.layout():
+            m = 0 if self.isMaximized() else RESIZE_MARGIN
+            self.layout().setContentsMargins(m, m, m, m)
+        super().changeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.close_btn.move(self.shell.width() - CLOSE_BTN - CLOSE_INSET, CLOSE_INSET)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.capturing is None:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     # ------------------------------------------------------------------ window
     def closeEvent(self, event):
