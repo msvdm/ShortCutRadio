@@ -44,11 +44,15 @@ SHORTCUT_ROWS = [
 CORNERS = [("top-right", "Top right"), ("top-left", "Top left"),
            ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left")]
 CAPTURE_TIP = ("Click, then press the new key (Esc cancels, Backspace clears).\n"
-               "Single-key shortcuts only work while the overlay is on,\n"
-               "so typing is safe when it's off.")
-HELP_TEXT = ("The keyboard shortcuts work only while the overlay is active. If you want "
-             "to free them up for other purposes - such as typing - disable the overlay; "
-             "the music will not stop.")
+               "Every shortcut but the overlay one works only while the\n"
+               "overlay is on, so typing is safe when it's off.")
+UNGRABBED_TIP = ("This key cannot be taken: either another program already holds\n"
+                 "it, or this keyboard has no such key. The app you are using\n"
+                 "will receive it too. Record it again on the layout you type in.")
+HELP_TEXT = ("The keyboard shortcuts work only while the overlay is active - all of them "
+             "except the one that turns the overlay on, which always works. If you want "
+             "to free the keys up for other purposes - such as typing - disable the "
+             "overlay; the music will not stop.")
 LIST_HINT = "drag to reorder · double-click to play"
 # Qt copies whatever is put in an item, so SOURCE_ROLE is a *copy* of the
 # source -- fine for drawing the row, useless to write to. Anything that edits
@@ -303,6 +307,7 @@ class MainWindow(QWidget):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.app = app
         self.capturing = None
+        self._ungrabbed = set()         # live combos the focused app still gets
         self.sounding = False           # something is audible right now
         self._drag_from = None
         self.meter = Meter(ROW_BARS, self)
@@ -735,9 +740,19 @@ class MainWindow(QWidget):
     def refresh_shortcuts(self):
         sc = self.app.config["shortcuts"]
         for action, btn in self.shortcut_buttons.items():
-            btn.setText(pretty(sc.get(action, "")) or "—")
+            combo = sc.get(action, "")
+            leaks = bool(combo) and combo in self._ungrabbed
+            btn.setText(pretty(combo) + (" ⚠" if leaks else ""))
+            btn.setToolTip(UNGRABBED_TIP if leaks else CAPTURE_TIP)
             btn.row.set_capturing(False)
             btn.setDown(False)
+
+    def on_ungrabbed(self, combos):
+        """The grabber's report: which live shortcuts the focused app still
+        receives. A key that isn't taken has to look different from one that
+        is, or a shortcut that types into the app in front looks fine here."""
+        self._ungrabbed = set(combos)
+        self.refresh_shortcuts()
 
     def begin_capture(self, btn):
         if self.app.hotkeys.error:

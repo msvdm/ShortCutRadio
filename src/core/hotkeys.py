@@ -4,10 +4,11 @@ pynput's X11 backend taps the XRECORD extension, the mechanism the NFSU2 radio
 proved: the key still reaches the focused app, and it fires through a
 fullscreen game's keyboard grab. Windows and macOS have their own backends.
 
-Single-key combos are live only while the overlay is on (`single_keys_live`);
-combos with Ctrl/Alt/Super always are. Live combos are also grabbed
-(keygrab.py) so the focused app doesn't receive them: overlay on, the key is
-ShortCutRadio's; overlay off, the key is free.
+Every shortcut is live only while the overlay is on (`single_keys_live`); the
+one exception is the overlay toggle itself, which has to work to turn the
+overlay back on. Live combos are also grabbed (keygrab.py) so the focused app
+doesn't receive them: overlay on, the key is ShortCutRadio's; overlay off, the key
+is free -- including combos like Ctrl+E, which the app in front may want.
 
 Combo strings are "ctrl+alt+r", "'", "f9", "shift+page_down": modifiers in a
 fixed order, then the key. The same normaliser builds them for capture and for
@@ -38,8 +39,11 @@ MOD_NAMES = {
     "cmd": "super", "cmd_l": "super", "cmd_r": "super",
 }
 REPEATABLE = {"vol_up", "vol_down"}
+ALWAYS_LIVE = "overlay"     # the only action that works with the overlay off
 DEBUG = os.environ.get("SHORTCUTRADIO_DEBUG_KEYS") == "1"
 DEBOUNCE_S = 0.25
+REPEAT_S = 0.09             # how fast a held volume key may repeat
+REPEAT_GAP_S = 2.0          # a longer gap means we missed the release
 
 
 def parse_combo(combo):
@@ -93,16 +97,22 @@ def key_name(key, canonical=None):
 class Hotkeys(QObject):
     triggered = Signal(str)     # action name
     captured = Signal(str)      # combo recorded in capture mode ("esc" = cancel)
+    ungrabbed = Signal(list)    # live combos the focused app still receives
 
-    def __init__(self, bindings):
+    def __init__(self, bindings, keysyms=None):
         super().__init__()
         self.bindings = {}
+        # Key name -> the X keysym it came from. `ord(char)` is the keysym only
+        # for Latin-1, so without this a Cyrillic key cannot be grabbed at all
+        # (see keygrab.keysym_for). Learned from every press, kept in the config.
+        self.keysyms = {} if keysyms is None else keysyms
         self._single_live = False
-        self.grabber = KeyGrabber()
+        self.grabber = KeyGrabber(self.ungrabbed.emit)
         self.set_bindings(bindings)
         self.capturing = False
         self._mods = set()
         self._last = {}
+        self._down = {}         # key name -> when it was last pressed
         self._listener = None
         self.error = IMPORT_ERROR
 
@@ -121,8 +131,12 @@ class Hotkeys(QObject):
         self._update_grabs()
 
     def _update_grabs(self):
-        live = [parse_combo(c) for c in self.bindings
-                if has_modifier(c) or self._single_live]
+        live = []
+        for combo, action in self.bindings.items():
+            if action != ALWAYS_LIVE and not self._single_live:
+                continue
+            mods, key = parse_combo(combo)
+            live.append((combo, mods, key, self.keysyms.get(key)))
         self.grabber.set_combos(live)
 
     def start(self):
@@ -173,12 +187,23 @@ class Hotkeys(QObject):
         if name in MOD_ORDER:
             self._mods.add(name)
             return
+        self._learn_keysym(name, key)
+        # A held key repeats as bare presses, with no release in between (25
+        # presses and 1 release in a 1.2 s hold here), so a key we have not
+        # seen released is repeating. The gap is only a safety net for a
+        # release we never saw: it has to be longer than X's repeat *delay*
+        # (500 ms here), not just the interval between repeats.
+        now = time.monotonic()
+        repeat = now - self._down.get(name, 0) < REPEAT_GAP_S
+        self._down[name] = now
         combo = make_combo(self._mods, name)
         if DEBUG:
-            print(f"[hotkeys] {combo!r} live={self._single_live} "
+            print(f"[hotkeys] {combo!r} live={self._single_live} repeat={repeat} "
                   f"capturing={self.capturing} -> {self.bindings.get(combo)}", flush=True)
 
         if self.capturing:
+            if repeat:              # the tail of a held key is not a choice
+                return
             self.capturing = False
             self.captured.emit(combo)
             return
@@ -186,11 +211,13 @@ class Hotkeys(QObject):
         action = self.bindings.get(combo)
         if action is None:
             return
-        if not has_modifier(combo) and not self._single_live:
+        if action != ALWAYS_LIVE and not self._single_live:
             return
-        # Held keys auto-repeat; only volume should ride that.
-        now = time.monotonic()
-        if action not in REPEATABLE and now - self._last.get(action, 0) < DEBOUNCE_S:
+        if repeat:
+            # Only volume rides auto-repeat, and slower than X delivers it.
+            if action not in REPEATABLE or now - self._last.get(action, 0) < REPEAT_S:
+                return
+        elif now - self._last.get(action, 0) < DEBOUNCE_S:
             return
         self._last[action] = now
         self.triggered.emit(action)
@@ -199,3 +226,23 @@ class Hotkeys(QObject):
         name = key_name(key)
         if name in MOD_ORDER:
             self._mods.discard(name)
+            # A held key reports a different character once a modifier is
+            # gone (Shift+K is Cyrillic k on a us,bg keymap, K without it),
+            # so its release would not match its press. Forget what is held.
+            self._down.clear()
+        else:
+            self._down.pop(name, None)
+
+    def _learn_keysym(self, name, key):
+        """Remember which keysym a character came from, and re-grab if it is new.
+
+        `ord(char)` is the keysym only for Latin-1. On a us,bg keymap pynput
+        reports Shift+E as Cyrillic e (it mistakes Shift for AltGr), and 1077
+        is not a keysym -- the key could not be grabbed without this.
+        """
+        vk = getattr(key, "vk", None)
+        if vk is None or len(name) != 1 or ord(name) <= 0xFF:
+            return
+        if self.keysyms.get(name) != vk:
+            self.keysyms[name] = vk
+            self._update_grabs()

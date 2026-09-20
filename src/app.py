@@ -44,7 +44,7 @@ class App:
 
         self.artwork = Artwork()
         self.player = Player(cfg["sources"], cfg["current"], cfg["volume"])
-        self.hotkeys = Hotkeys(cfg["shortcuts"])
+        self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"])
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
         self.window = MainWindow(self)
         self.tray = Tray(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
@@ -57,6 +57,7 @@ class App:
         self.artwork.changed.connect(lambda: self.refresh_state())
         self.hotkeys.triggered.connect(self._on_action)
         self.hotkeys.captured.connect(self.window.on_captured)
+        self.hotkeys.ungrabbed.connect(self.window.on_ungrabbed)
 
         self.actions = {
             "overlay": lambda: self.set_overlay(not cfg["overlay"]["visible"]),

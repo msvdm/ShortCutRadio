@@ -60,11 +60,15 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   would do. Most can play audio, but mpv is built to be scripted headless, runs
   on Windows, macOS and Linux, and on Windows ships as one DLL. MPRIS/SMTC
   media-key integration is a later add-on at the edges, not a reason to switch.
-- **Single-key shortcuts are live only while the overlay is on, and while
-  live they are TAKEN.** The focused app must not receive them. The author
-  asked for exactly this: *overlay visible → key taken; overlay hidden → key
-  free.* The overlay toggle must include Ctrl/Alt/Super; it is always live and
-  always grabbed.
+- **Shortcuts are live only while the overlay is on, and while live they are
+  TAKEN.** The focused app must not receive them. The author asked for exactly
+  this: *overlay visible → key taken; overlay hidden → key free* -- and for
+  **every** shortcut, not only the single-key ones. The first build exempted
+  combos with Ctrl/Alt/Super, so Play/Pause on Ctrl+E kept firing while the
+  overlay was off and the app in front never got its own Ctrl+E; that was
+  wrong. The one exception is the overlay toggle itself (`hotkeys.ALWAYS_LIVE`):
+  it must include Ctrl/Alt/Super, and it is always live and always grabbed,
+  because nothing else could turn the overlay back on.
 - **Observe + grab, not grab alone.** The pynput listener (XRECORD) fires the
   actions. keygrab.py only swallows keys. XRECORD still sees grabbed keys, so
   each action fires once, and it also sees keys inside fullscreen Wine games,
@@ -183,8 +187,36 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   saves, releases the grabs, then `os._exit`.
 - **Wrap pynput callbacks** (`Hotkeys._safe`): an uncaught exception silently
   stops the whole listener.
-- **Key-press debouncing:** X auto-repeat sends press/release pairs, so holding
-  a key repeats it. Only volume may repeat; other actions are debounced to 250 ms.
+- **Auto-repeat re-fires the action, and a repeat carries no release.**
+  Measured here: holding a key sends 25 presses and 1 release in 1.2 s -- the
+  first repeat 500 ms after the press, the rest every 30 ms (`xset q`). The
+  old 250 ms debounce only thinned that to 4/s, so holding Ctrl+E for 0.8 s
+  toggled play/pause three times and looked like a dead shortcut; that was the
+  "sometimes it works" bug. A key not yet seen released is repeating
+  (`Hotkeys._down`) and only volume rides it. The gap that forgives a release
+  we never saw must be longer than the repeat *delay*, not the interval
+  between repeats, and a modifier's release clears the held keys -- a held key
+  reports a different character once Shift is gone.
+- **pynput reads Shift as AltGr on any keymap without Mode_switch.** It looks
+  up the Mode_switch keycode, gets 0, then finds 0 in the zero padding of the
+  modifier table's *shift* row, so its AltGr mask is ShiftMask. Every Shift+key
+  is then read at level 4 of the keymap, which on `us,bg` is the Bulgarian
+  letter: Alt+Shift+E records `alt+shift+е`. It is consistent, so it matches --
+  but `ord("е")` is 1077, which is not a keysym, so that key could not be
+  grabbed and leaked into the focused app. The keysym pynput reports
+  (`KeyCode.vk`) is learned from every press, kept in the config (`keysyms`)
+  and preferred by `keygrab.keysym_for`.
+- **The active layout does not change what matches.** Cinnamon switches
+  layouts by locking the XKB group, and pynput ignores the group (it reads
+  index 0/1 of the keycode's keysym list), so the E key reports `e` in both
+  us and bg -- verified by switching and re-reading. What a binding would not
+  survive is a different *order* of the input sources, which makes another
+  layout group 1.
+- **A key that cannot be grabbed has to say so.** `_apply` used to skip an
+  unresolvable keysym and swallow BadAccess, so a shortcut that also typed
+  into the focused app looked exactly like a working one. It now reports what
+  it could not take (`Hotkeys.ungrabbed`) and the Shortcuts tab marks those
+  rows with a ⚠ and a tooltip.
 - **A custom QWidget subclass ignores a stylesheet background** unless it sets
   `WA_StyledBackground`. The tray's now-playing header rendered on the menu's
   background until it did.
@@ -241,6 +273,9 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   -disposition:v attached_pic out.mp3` gives embedded art (it cannot do this
   for Ogg/Opus -- that reader is covered by a synthetic file in the tests).
 - **Synthetic key tests:** use python-xlib `xtest.fake_input` + `d.sync()`.
+  A press with no release lets X's own auto-repeat run, which is the only way
+  to test the repeat rule; `xtest.fake_input` of Ctrl+Shift_L switches the
+  layout, which is how the group questions above were answered.
   pynput's `Controller` keys are *invisible to a listener in another process*.
   Synthetic keys type into whatever window has focus: focus a test window
   first and check it is active before each tap. One test typed `[[[[` into

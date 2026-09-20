@@ -34,7 +34,16 @@ KEYSYM_NAMES = {
 }
 
 
-def keysym_for(key):
+def keysym_for(key, hint=None):
+    """The X keysym for one of our key names.
+
+    `hint` is the keysym the listener saw for that key. Latin-1 keysyms equal
+    their code points, but nothing else does: on a us,bg keymap pynput reports
+    Shift+E as Cyrillic e, whose code point (1077) is not a keysym at all, so
+    the hint is the only way to find the key it stands for.
+    """
+    if hint:
+        return hint
     if len(key) == 1:
         return ord(key)         # Latin-1 keysyms equal their code points
     if key.startswith("vk") and key[2:].isdigit():
@@ -45,7 +54,12 @@ def keysym_for(key):
 
 
 class KeyGrabber:
-    def __init__(self):
+    def __init__(self, on_ungrabbed=None):
+        # Called with the combos that stayed with the focused app, whenever
+        # the set of grabs changes. It runs on the X thread.
+        self._report = on_ungrabbed
+        self._missed = set()        # what was reported last, to say it once
+        self._err = None
         self.available = (xdisplay is not None and sys.platform.startswith("linux")
                           and bool(os.environ.get("DISPLAY"))
                           and os.environ.get("XDG_SESSION_TYPE") != "wayland")
@@ -75,16 +89,16 @@ class KeyGrabber:
             self._thread.join(1)
 
     def set_combos(self, combos):
-        """Grab exactly these (mods, key) pairs; release everything else."""
+        """Grab exactly these (combo, mods, key, keysym) keys; release the rest."""
         if self.available:
             self._ops.put(list(combos))
 
     # ------------------------------------------------------------------ X thread
     def _on_error(self, err, *_):
-        # BadAccess: another program already owns that key. Not fatal.
-        if isinstance(err, xerror.BadAccess):
-            print("[keygrab] a key is already grabbed by another program", flush=True)
-        else:
+        # BadAccess: another program already owns that key. Not fatal, but the
+        # key is not ours -- _apply reports it so the window can say so.
+        self._err = err
+        if not isinstance(err, xerror.BadAccess):
             print(f"[keygrab] X error: {err}", flush=True)
 
     def _masks(self, mods):
@@ -102,22 +116,39 @@ class KeyGrabber:
         return {m, m | X.LockMask, m | X.Mod2Mask, m | X.LockMask | X.Mod2Mask}
 
     def _apply(self, combos):
-        want = set()
-        for mods, key in combos:
-            ks = keysym_for(key)
-            if not ks:
-                continue
-            kc = self.d.keysym_to_keycode(ks)
+        """Take exactly these keys. A key that cannot be taken is reported, not
+        swallowed: a shortcut the focused app still gets looks identical to a
+        working one otherwise."""
+        want, missed = {}, []
+        for combo, mods, key, hint in combos:
+            ks = keysym_for(key, hint)
+            kc = self.d.keysym_to_keycode(ks) if ks else 0
             if not kc:
+                if combo not in self._missed:
+                    print(f"[keygrab] no key on this keyboard for {combo!r} "
+                          f"(keysym {ks})", flush=True)
+                missed.append(combo)
                 continue
             for mask in self._masks(mods):
-                want.add((kc, mask))
-        for kc, mask in self._grabbed - want:
+                want[(kc, mask)] = combo
+        for kc, mask in self._grabbed - set(want):
             self.root.ungrab_key(kc, mask)
-        for kc, mask in want - self._grabbed:
+        for (kc, mask), combo in want.items():
+            if (kc, mask) in self._grabbed:
+                continue
+            self._err = None
             self.root.grab_key(kc, mask, True, X.GrabModeAsync, X.GrabModeAsync)
-        self._grabbed = want
+            self.d.sync()           # errors arrive here, so we know which key
+            if self._err is not None and combo not in missed:
+                if combo not in self._missed:
+                    print(f"[keygrab] {combo!r} is already grabbed by another "
+                          f"program", flush=True)
+                missed.append(combo)
+        self._grabbed = set(want)
         self.d.sync()
+        self._missed = set(missed)
+        if self._report:
+            self._report(sorted(self._missed))
 
     def _run(self):
         fd = self.d.fileno()

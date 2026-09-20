@@ -29,6 +29,9 @@ DEFAULTS = {
     "volume": 70,
     "theme": "auto",           # "auto" follows the desktop; else "dark" / "light"
     "shortcuts": DEFAULT_SHORTCUTS,
+    # Key name -> X keysym, learned from the keys actually pressed. Only keys
+    # outside Latin-1 need it; see hotkeys.Hotkeys._learn_keysym.
+    "keysyms": {},
     "overlay": {
         "visible": False,
         "corner": "top-right",

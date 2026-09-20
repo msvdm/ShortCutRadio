@@ -1,13 +1,17 @@
 import base64
 import random
 import struct
+import time
+
+import pytest
 
 from src.core import levels
 from src.core.artfetch import (image_size, logo_candidates, mentions, name_tokens,
                                site_for_stream)
 from src.core.config import normalize_theme, opacity_from_percent, transparency_percent
 from src.core.coverart import cover_file, embedded_art
-from src.core.hotkeys import has_modifier, make_combo, parse_combo, pretty
+from src.core.hotkeys import Hotkeys, has_modifier, make_combo, parse_combo, pretty
+from src.core.keygrab import keysym_for
 from src.core.player import now_playing
 from src.core.scraper import clean_name, harvest, looks_streamy, name_from_url, parse_playlist
 from src.core.sources import art_label, folder_tracks
@@ -70,6 +74,79 @@ def test_combos():
     assert make_combo({"alt", "ctrl"}, "r") == "ctrl+alt+r"
     assert has_modifier("ctrl+alt+r") and not has_modifier("'") and not has_modifier("shift+e")
     assert pretty("ctrl+alt+r") == "Ctrl+Alt+R" and pretty("page_down") == "Page Down"
+
+
+# The listener itself needs a keyboard; its bookkeeping does not, so the keys
+# are handed to Hotkeys directly, exactly as pynput would deliver them.
+keyboard = pytest.importorskip("pynput.keyboard")
+CTRL, ALT = keyboard.Key.ctrl_l, keyboard.Key.alt_l
+
+
+def _hotkeys(**bindings):
+    hk = Hotkeys(bindings)
+    hk.grabber.available = False
+    fired = []
+    hk.triggered.connect(fired.append)
+    return hk, fired
+
+
+def _tap(hk, *keys):
+    for k in keys:
+        hk._press(k)
+    for k in reversed(keys):
+        hk._release(k)
+
+
+def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    hk, fired = _hotkeys(play_pause="ctrl+e", vol_up="]")
+    hk.single_keys_live = True
+    hk._press(CTRL)
+    e = keyboard.KeyCode(char="e", vk=101)
+    hk._press(e)
+    clock[0] += 0.5             # X waits half a second before it repeats ...
+    hk._press(e)
+    for _ in range(20):         # ... then repeats as presses, with no release
+        clock[0] += 0.03
+        hk._press(e)
+    hk._release(e)
+    hk._release(CTRL)
+    assert fired == ["play_pause"]
+    clock[0] += 0.3             # a real second press is not a repeat
+    hk._press(CTRL)
+    hk._press(e)
+    assert fired == ["play_pause", "play_pause"]
+
+
+def test_volume_still_rides_the_repeat():
+    hk, fired = _hotkeys(vol_up="]")
+    hk.single_keys_live = True
+    for _ in range(3):
+        hk._press(keyboard.KeyCode(char="]", vk=93))
+        time.sleep(0.1)
+    assert fired == ["vol_up"] * 3
+
+
+def test_only_the_overlay_key_works_with_the_overlay_off():
+    hk, fired = _hotkeys(overlay="ctrl+alt+r", play_pause="ctrl+e", source_next="e")
+    _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
+    _tap(hk, keyboard.KeyCode(char="e", vk=101))
+    assert fired == []
+    _tap(hk, CTRL, ALT, keyboard.KeyCode(char="r", vk=114))
+    assert fired == ["overlay"]
+    hk.single_keys_live = True
+    _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
+    assert fired == ["overlay", "play_pause"]
+
+
+def test_a_key_outside_latin1_is_grabbed_by_its_keysym():
+    assert keysym_for("e") == ord("e")          # Latin-1: the code point is it
+    assert keysym_for("\u0435") == 1077        # Cyrillic e: not a keysym at all
+    assert keysym_for("\u0435", 1765) == 1765  # what the listener saw instead
+    hk, _ = _hotkeys(overlay="alt+shift+\u0435")
+    _tap(hk, ALT, keyboard.KeyCode(char="\u0435", vk=1765))
+    assert hk.keysyms == {"\u0435": 1765}
 
 
 def test_now_playing():
