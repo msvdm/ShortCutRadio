@@ -35,8 +35,9 @@ portable (one folder) → cross-platform (Windows, macOS).
 shortcutradio.py               entry; single instance via QLocalServer ("show" message)
 src/app.py                wires everything; quit = save, stop, os._exit
 src/core/config.py        JSON config; portable mode if shortcutradio.portable sits next to the app
-src/core/sources.py       source = {name, kind: stream|folder, target, shuffle}
-src/core/player.py        libmpv (python-mpv) in-process; one `changed` signal with a state snapshot
+src/core/sources.py       source = {name, kind: stream|folder, target, shuffle}; names from URLs
+src/core/player.py        libmpv (python-mpv) in-process; one `changed` signal with a PlayerState
+src/core/net.py           the one door to the network: open_url, NET_ERRORS, Icecast status
 src/core/scraper.py       Add Stream: URL/page/playlist -> list of verified streams (stdlib only)
 src/core/artfetch.py      a station's page -> its logo (stdlib only; same style as scraper)
 src/core/coverart.py      a local track's cover: a file beside it, or ID3/FLAC/Ogg/MP4 art
@@ -44,8 +45,13 @@ src/core/levels.py        the level meters' numbers (pure, so they can be tested
 src/core/hotkeys.py       pynput listener (observes) + gating + capture mode
 src/core/keygrab.py       X11 passive grabs so live keys don't reach the focused app
 src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
-src/gui/widgets.py        the hand-painted parts: art, pill switch, transport, meters
-src/gui/main_window.py    frameless shell + hero strip + tab strip + the three pages
+src/gui/widgets.py        the hand-painted parts: pill switch, transport, meters, labels
+src/gui/art.py            the art box: trim, fit, backdrop, initials tile (FittedArt)
+src/gui/frameless.py      a titlebar-less window: resize margin, move, maximise
+src/gui/main_window.py    hero + tab strip; each tab is its own page module:
+src/gui/sources_page.py     the list, its row delegate, add/edit/remove
+src/gui/shortcuts_page.py   key caps and capture
+src/gui/overlay_page.py     the card's look
 src/gui/artwork.py        which picture a source gets, cached on disk, fetched off-thread
 src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
@@ -154,6 +160,15 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   audible and the bars are on screen -- the overlay's repaint lands on top of
   a running game. Asking mpv for real levels would mean an audio filter and a
   metadata poll for something nobody can check against the music.
+- **One state, one edit path.** The player emits a frozen `PlayerState`;
+  the hero, the overlay and the tray each turn its `phase` (empty, error,
+  stopped, paused, connecting, playing) into their own words, and read
+  `audible` / `playing` / `can_skip_track` instead of re-deriving them. They
+  used to run three if-ladders over a dict, in three different orders. Every
+  change to a source goes through `App.edit_source(src, **changes)` and every
+  change to the card through `App.update_overlay(**changes)`; nothing else
+  writes to the config's dicts. The player remembers its source *object*, so
+  an edited, reordered or trimmed list needs only `sources_changed()`.
 - **The window is skinned, not native.** One QSS string from `theme.stylesheet()`
   on the QApplication covers the window, the dialogs, the message boxes and the
   menus; `theme.tokens()` serves the parts painted by hand. The style is forced
@@ -228,6 +243,9 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   3x, so a pixmap fitted to the widget's 88 *points* is drawn blurred. Scale to
   `size * devicePixelRatioF()` and set the ratio on the result -- once, in
   `fit_pixmap`, never in a paintEvent the meter calls fourteen times a second.
+  `art.FittedArt` keeps the original picture, so a new box size is fitted from
+  it; the overlay used to re-fit its own fitted copy, and compared points with
+  pixels, so on this 3x screen it re-fitted on every state change.
 - **Qt copies what you put in a list item.** `QListWidgetItem.setData(role,
   src)` stores a *copy* of the dict and `item.data(role)` hands back a new one
   every call, so every context-menu action that wrote to it -- shuffle, and
@@ -251,9 +269,10 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   `shortcutradio-<user>`, so the scratch-config test run this file prescribes just
   handed its window to the real ShortCutRadio and exited. The name now carries a
   hash of `data_dir()`.
-- **A row keeps its last painted frame when the meter stops.** Pausing has to
-  repaint the source list itself, or the bars stay frozen on screen instead of
-  disappearing.
+- **A row keeps its last painted frame when the meter stops.** Without a
+  repaint the bars stay frozen on screen instead of disappearing, so
+  `Meter.set_running(False)` emits one last `tick` and every consumer repaints
+  without them.
 - **Wayland is not supported** (pynput and X grabs are X11-only). Mint is X11 today.
 
 ## Testing

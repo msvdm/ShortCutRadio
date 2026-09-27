@@ -10,6 +10,8 @@ import json
 import os
 import sys
 
+from .sources import make_stream
+
 APP_NAME = "ShortCutRadio"
 
 DEFAULT_SHORTCUTS = {
@@ -106,7 +108,7 @@ def normalize_theme(value):
 
 
 def read_stations_conf(path):
-    """[{name, kind, target, shuffle}] from an NFSU2-style `Name | URL` file."""
+    """Stream sources from an NFSU2-style `Name | URL` file."""
     out = []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -116,10 +118,17 @@ def read_stations_conf(path):
                     continue
                 name, url = (p.strip() for p in line.split("|", 1))
                 if name and url:
-                    out.append({"name": name, "kind": "stream", "target": url, "shuffle": False})
+                    out.append(make_stream(name, url))
     except OSError:
         pass
     return out
+
+
+def _usable(source):
+    """A hand-edited or half-written entry must not crash the list later."""
+    return (isinstance(source, dict) and source.get("kind") in ("stream", "folder")
+            and isinstance(source.get("target"), str) and bool(source["target"])
+            and isinstance(source.get("name"), str))
 
 
 class Config:
@@ -140,6 +149,10 @@ class Config:
                     os.replace(self.path, self.path + ".bad")
                 except OSError:
                     pass
+        # Checked once, here, so the rest of the app can trust what it reads.
+        srcs = self.data["sources"] if isinstance(self.data["sources"], list) else []
+        self.data["sources"] = [s for s in srcs if _usable(s)]
+        self.data["theme"] = normalize_theme(self.data["theme"])
 
     def __getitem__(self, key):
         return self.data[key]

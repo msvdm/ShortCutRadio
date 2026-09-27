@@ -10,6 +10,7 @@ receivers never touch mpv state concurrently.
 import os
 import tempfile
 import threading
+from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -65,15 +66,95 @@ def now_playing(meta, media_title, path, kind):
     return title
 
 
+@dataclass(frozen=True)
+class PlayerState:
+    """What the player is doing, as every view needs it. Immutable: a new one
+    is emitted on every change, and receivers may keep the old one."""
+
+    index: int = 0
+    count: int = 0              # sources in the list
+    name: str = ""
+    kind: str | None = None     # "stream" | "folder" | None (no sources)
+    loaded: bool = False        # mpv has something open (playing or paused)
+    paused: bool = False
+    connecting: bool = False    # opened, but no audio yet
+    volume: int = 0
+    track: str = ""
+    path: str | None = None     # for the artwork: the file that is playing
+    icy_url: str = ""           # where the station says it lives
+    track_pos: int | None = None
+    track_count: int | None = None
+    error: str = ""
+
+    @property
+    def phase(self):
+        """One word for the status the views put into their own words:
+        empty | error | stopped | paused | connecting | playing."""
+        if not self.count:
+            return "empty"
+        if self.error:
+            return "error"
+        if not self.loaded:
+            return "stopped"
+        if self.paused:
+            return "paused"
+        if self.connecting:
+            return "connecting"
+        return "playing"
+
+    @property
+    def playing(self):
+        """Loaded and not paused: the play button shows pause."""
+        return self.loaded and not self.paused
+
+    @property
+    def audible(self):
+        """Sound is coming out right now -- what the level meters follow."""
+        return self.loaded and not self.paused and not self.connecting
+
+    @property
+    def can_skip_track(self):
+        return self.kind == "folder" and self.loaded
+
+
+EMPTY_STATE = PlayerState()
+
+
+def make_state(props, index, source, count, error=""):
+    """The state from mpv's observed properties and the current source."""
+    kind = source["kind"] if source else None
+    loaded = not props["idle-active"]
+    pos, total = props["playlist-pos"], props["playlist-count"] or 0
+    folder = kind == "folder"
+    return PlayerState(
+        index=index,
+        count=count,
+        name=source["name"] if source else "",
+        kind=kind,
+        loaded=loaded,
+        paused=bool(props["pause"]),
+        connecting=loaded and bool(props["core-idle"]) and not props["pause"],
+        volume=int(round(props["volume"] or 0)),
+        track=now_playing(props["metadata"], props["media-title"], props["path"], kind)
+        if loaded else "",
+        path=props["path"] if loaded else None,
+        # Most Icecast/SHOUTcast mounts announce their home page in icy-url.
+        icy_url=_tag(props["metadata"], "icy-url") if loaded else "",
+        track_pos=(pos + 1) if (folder and pos is not None and pos >= 0) else None,
+        track_count=total if folder else None,
+        error=error,
+    )
+
+
 class Player(QObject):
-    changed = Signal(dict)
+    changed = Signal(object)        # PlayerState
     _stream_ended = Signal()
 
     def __init__(self, sources, current=0, volume=70):
         super().__init__()
         volume = max(0, min(VOLUME_MAX, volume))        # an older config may be louder
         self.sources = sources          # the config's list, shared by reference
-        self.index = current if 0 <= current < len(sources) else 0
+        self._select(current if 0 <= current < len(sources) else 0)
         self.error = ""
         self._lock = threading.Lock()
         self._props = {"metadata": None, "media-title": None, "path": None,
@@ -123,6 +204,12 @@ class Player(QObject):
             self._tune(paused=bool(self.mpv.pause))
 
     # ---------------------------------------------------------------- state
+    def _select(self, index):
+        """Point at a source. The source itself is remembered, not only its
+        place: the list can be reordered or cut under it (sources_changed)."""
+        self.index = index
+        self._current = self.current_source()
+
     def current_source(self):
         if 0 <= self.index < len(self.sources):
             return self.sources[self.index]
@@ -135,30 +222,10 @@ class Player(QObject):
 
     def snapshot(self):
         with self._lock:
-            p = dict(self._props)
+            props = dict(self._props)
             error = self.error
-        src = self.current_source()
-        kind = src["kind"] if src else None
-        loaded = not p["idle-active"]
-        pos, count = p["playlist-pos"], p["playlist-count"] or 0
-        return {
-            "index": self.index,
-            "count": len(self.sources),
-            "name": src["name"] if src else "",
-            "kind": kind,
-            "loaded": loaded,
-            "paused": bool(p["pause"]),
-            "connecting": loaded and bool(p["core-idle"]) and not p["pause"],
-            "volume": int(round(p["volume"] or 0)),
-            "track": now_playing(p["metadata"], p["media-title"], p["path"], kind) if loaded else "",
-            # For the artwork: which file is playing, and where the station
-            # says it lives (most Icecast/SHOUTcast mounts announce icy-url).
-            "path": p["path"] if loaded else None,
-            "icy_url": _tag(p["metadata"], "icy-url") if loaded else "",
-            "track_pos": (pos + 1) if (kind == "folder" and pos is not None and pos >= 0) else None,
-            "track_count": count if kind == "folder" else None,
-            "error": error,
-        }
+        return make_state(props, self.index, self.current_source(),
+                          len(self.sources), error)
 
     def _emit(self):
         self.changed.emit(self.snapshot())
@@ -200,7 +267,7 @@ class Player(QObject):
         """Explicit play (double-click, menu Play): always starts playback."""
         if not self.sources:
             return
-        self.index = index % len(self.sources)
+        self._select(index % len(self.sources))
         self._tune()
 
     def select_source(self, index):
@@ -211,7 +278,7 @@ class Player(QObject):
         """
         if not self.sources:
             return
-        self.index = index % len(self.sources)
+        self._select(index % len(self.sources))
         if self.loaded() or self._retry.isActive():
             self._tune(paused=bool(self.mpv.pause))
         else:
@@ -252,14 +319,19 @@ class Player(QObject):
     def change_volume(self, delta):
         self.set_volume((self.mpv.volume or 0) + delta)
 
-    def sources_changed(self, current_source=None):
-        """The list was edited. Keep pointing at the same source if it survived."""
-        if current_source is not None and any(s is current_source for s in self.sources):
-            self.index = next(i for i, s in enumerate(self.sources) if s is current_source)
+    def sources_changed(self):
+        """The list was edited. Keep pointing at the same source if it survived.
+
+        Matched by identity: the config's own dicts are the sources, so a
+        reorder must hand back the same objects (see sources_page.INDEX_ROLE).
+        """
+        found = next((i for i, s in enumerate(self.sources) if s is self._current), None)
+        if found is not None:
+            self._select(found)
         else:
             # The playing source was removed: stop rather than keep playing
             # something that is no longer in the list.
-            self.index = min(self.index, max(0, len(self.sources) - 1))
+            self._select(min(self.index, max(0, len(self.sources) - 1)))
             if self.loaded():
                 self.stop()
         self._emit()

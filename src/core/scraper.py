@@ -12,16 +12,15 @@ Stdlib only, blocking: the GUI runs `discover()` on a worker thread.
 
 import html
 import http.client
-import json
 import re
 import socket
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
-TIMEOUT = 8
+from .net import NET_ERRORS, TIMEOUT, icecast_sources, open_url, read_json
+from .sources import name_from_url
+
 PAGE_MAX = 3 * 1024 * 1024
 MAX_CANDIDATES = 80
 MAX_SCRIPTS = 6
@@ -35,9 +34,6 @@ STATIC_EXTS = {".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
                ".zip"}
 STREAMY_SEGMENTS = {"stream", "live", "listen", ";", "radio.mp3", "stream.mp3"}
 STREAMY_HOST_WORDS = ("stream", "icecast", "shoutcast", "hls", "cast", "radio.")
-GENERIC_SEGMENTS = {"", "playlist.m3u8", "index.m3u8", "chunklist.m3u8", "master.m3u8",
-                    "stream", "live", "listen", "hls", "fls", "radio", "audio", "mp3",
-                    "aac", "icecast", "regstations", ";", "stream.mp3"}
 
 ABS_URL = re.compile(r"""https?://[^\s"'<>()\\\[\]{}|^`]+""")
 ATTR_URL = re.compile(r"""(?:href|src|data-[\w-]+)\s*=\s*["']([^"']+)["']""", re.I)
@@ -99,22 +95,6 @@ def looks_streamy(url, page_host=""):
     return any(s in STREAMY_SEGMENTS for s in segs)
 
 
-def name_from_url(url):
-    p = urllib.parse.urlsplit(url)
-    for seg in reversed(urllib.parse.unquote(p.path).split("/")):
-        s = seg.strip()
-        if s.lower() in GENERIC_SEGMENTS or s.isdigit():
-            continue
-        for suffix in (".m3u8", ".m3u", ".pls", ".mp3", ".aac", ".ogg", ".opus",
-                       ".stream", ".smil"):
-            if s.lower().endswith(suffix):
-                s = s[: -len(suffix)]
-        s = s.replace("-", " ").replace("_", " ").strip()
-        if s:
-            return s.title() if s == s.lower() else s
-    return p.hostname or url
-
-
 def harvest(text, base_url):
     """Candidate stream URLs in a page or script, in order of appearance."""
     text = text.replace("\\/", "/").replace("\\u002F", "/")
@@ -155,13 +135,6 @@ def parse_playlist(body, base_url):
     return title, [u for u in urls if u.startswith(("http://", "https://"))]
 
 
-def _open(url, extra=None):
-    headers = {"User-Agent": UA, "Accept": "*/*", "Icy-MetaData": "1"}
-    headers.update(extra or {})
-    req = urllib.request.Request(url, headers=headers)
-    return urllib.request.urlopen(req, timeout=TIMEOUT)
-
-
 def _detail(ct, headers):
     codec = {"audio/mpeg": "MP3", "audio/aac": "AAC", "audio/aacp": "AAC+",
              "audio/ogg": "Ogg", "application/ogg": "Ogg", "audio/flac": "FLAC",
@@ -180,14 +153,14 @@ def classify(url, want_page=False):
     Page bodies are only read when `want_page` (the user's own URL, scripts).
     """
     try:
-        resp = _open(url)
+        resp = open_url(url)
     except http.client.BadStatusLine as e:
         # Old SHOUTcast v1 answers "ICY 200 OK", which http.client rejects --
         # that answer itself proves it is a stream.
         if "ICY" in str(e):
             return ("audio", Found(name_from_url(url), url, "SHOUTcast"), "shoutcast")
         return None
-    except (OSError, ValueError, http.client.HTTPException):
+    except NET_ERRORS:
         return None
 
     with resp:
@@ -197,7 +170,7 @@ def classify(url, want_page=False):
         server = headers.get("server", "").lower()
         try:
             head = resp.read(4096)
-        except (OSError, http.client.HTTPException):
+        except NET_ERRORS:
             head = b""
         text_head = head.decode("utf-8", "replace").lstrip("﻿").lstrip()
 
@@ -230,7 +203,7 @@ def classify(url, want_page=False):
 def _read_rest(resp, limit):
     try:
         return resp.read(limit).decode("utf-8", "surrogateescape")
-    except (OSError, http.client.HTTPException, ValueError):
+    except NET_ERRORS:
         return ""
 
 
@@ -258,17 +231,8 @@ def resolve(url, depth=0):
 def icecast_mounts(stream_url):
     """Other mounts on the same Icecast server, via its status-json.xsl."""
     p = urllib.parse.urlsplit(stream_url)
-    status = f"{p.scheme}://{p.netloc}/status-json.xsl"
-    try:
-        with _open(status) as resp:
-            data = json.loads(resp.read(512 * 1024).decode("utf-8", "replace"))
-    except (OSError, ValueError, http.client.HTTPException):
-        return []
-    sources = data.get("icestats", {}).get("source", [])
-    if isinstance(sources, dict):
-        sources = [sources]
     out = []
-    for s in sources[:30]:
+    for s in icecast_sources(stream_url)[:30]:
         listen = s.get("listenurl") or ""
         path = urllib.parse.urlsplit(listen).path
         if not path:
@@ -293,9 +257,8 @@ def radio_browser(query, report=lambda m: None):
            + urllib.parse.urlencode({"name": q, "limit": 20, "hidebroken": "true",
                                      "order": "clickcount", "reverse": "true"}))
     try:
-        with _open(api, {"User-Agent": "ShortCutRadio/0.1"}) as resp:
-            rows = json.loads(resp.read(1024 * 1024).decode("utf-8", "replace"))
-    except (OSError, ValueError, http.client.HTTPException):
+        rows = read_json(api, 1024 * 1024, {"User-Agent": "ShortCutRadio/0.1"})
+    except NET_ERRORS:
         return []
     out = []
     for r in rows:
@@ -331,22 +294,7 @@ def discover(url, report=lambda m: None):
         text, final = first[1], first[2]
         m = TITLE.search(text)
         page_title = html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
-        candidates = harvest(text, final)
-
-        page_host = (urllib.parse.urlsplit(final).hostname or "").lower()
-        site = ".".join(page_host.split(".")[-2:])
-        scripts = []
-        for s in SCRIPT_SRC.findall(text):
-            su = urllib.parse.urljoin(final, html.unescape(s))
-            if (urllib.parse.urlsplit(su).hostname or "").endswith(site):
-                scripts.append(su)
-        for su in scripts[:MAX_SCRIPTS]:
-            r = classify(su, want_page=True)
-            if r and r[0] == "page":
-                seen = {_key(c) for c in candidates}
-                candidates += [c for c in harvest(r[1], su) if _key(c) not in seen]
-
-        candidates = candidates[:MAX_CANDIDATES]
+        candidates = _page_candidates(text, final)
         report(f"Checking {len(candidates)} possible stream"
                f"{'s' if len(candidates) != 1 else ''}…")
         with ThreadPoolExecutor(max_workers=12) as pool:
@@ -372,6 +320,24 @@ def discover(url, report=lambda m: None):
     if not results and page_title:
         results = _dedupe(radio_browser(page_title, report))
     return results
+
+
+def _page_candidates(text, final):
+    """Stream-looking URLs on a page and in its same-site scripts."""
+    candidates = harvest(text, final)
+    page_host = (urllib.parse.urlsplit(final).hostname or "").lower()
+    site = ".".join(page_host.split(".")[-2:])
+    scripts = []
+    for s in SCRIPT_SRC.findall(text):
+        su = urllib.parse.urljoin(final, html.unescape(s))
+        if (urllib.parse.urlsplit(su).hostname or "").endswith(site):
+            scripts.append(su)
+    for su in scripts[:MAX_SCRIPTS]:
+        r = classify(su, want_page=True)
+        if r and r[0] == "page":
+            seen = {_key(c) for c in candidates}
+            candidates += [c for c in harvest(r[1], su) if _key(c) not in seen]
+    return candidates[:MAX_CANDIDATES]
 
 
 def clean_name(name):

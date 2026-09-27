@@ -2,7 +2,7 @@
 
 import threading
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QPushButton, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout)
@@ -96,15 +96,15 @@ class AddStreamDialog(QDialog):
             return
         self.status.setText(f"Found {len(found)} stream{'s' if len(found) != 1 else ''}. "
                             "Tick the ones to add.")
-        self.tree.blockSignals(True)
-        for f in found:
-            it = QTreeWidgetItem([f.name, f.detail, f.url])
-            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
-            it.setCheckState(0, Qt.CheckState.Checked)
-            it.setToolTip(2, f.url)
-            it.setData(0, Qt.ItemDataRole.UserRole, f.site)
-            self.tree.addTopLevelItem(it)
-        self.tree.blockSignals(False)
+        with QSignalBlocker(self.tree):
+            for f in found:
+                it = QTreeWidgetItem([f.name, f.detail, f.url])
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                            | Qt.ItemFlag.ItemIsEditable)
+                it.setCheckState(0, Qt.CheckState.Checked)
+                it.setToolTip(2, f.url)
+                it.setData(0, Qt.ItemDataRole.UserRole, f.site)
+                self.tree.addTopLevelItem(it)
         self._update_ok()
 
     def _items(self):

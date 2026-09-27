@@ -16,6 +16,7 @@ from .core.artfetch import clean_site
 from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, pretty
 from .core.player import Player
+from .core.sources import art_label
 from .gui import theme
 from .gui.artwork import Artwork
 from .gui.main_window import MainWindow
@@ -56,8 +57,8 @@ class App:
         self.player.changed.connect(self._on_state)
         self.artwork.changed.connect(lambda: self.refresh_state())
         self.hotkeys.triggered.connect(self._on_action)
-        self.hotkeys.captured.connect(self.window.on_captured)
-        self.hotkeys.ungrabbed.connect(self.window.on_ungrabbed)
+        self.hotkeys.captured.connect(self.window.shortcuts.on_captured)
+        self.hotkeys.ungrabbed.connect(self.window.shortcuts.on_ungrabbed)
 
         self.actions = {
             "overlay": lambda: self.set_overlay(not cfg["overlay"]["visible"]),
@@ -70,10 +71,8 @@ class App:
             "vol_down": lambda: self.player.change_volume(-VOLUME_STEP),
         }
 
-        try:            # follow the desktop while the theme is "auto"
-            QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
-        except AttributeError:
-            pass
+        # Follow the desktop while the theme is "auto".
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._scheme_changed)
 
         self.hotkeys.start()
         if self.tray:
@@ -90,8 +89,8 @@ class App:
         self._push(s)
         self._learn_site(s)
         cfg = self.config
-        if cfg["volume"] != s["volume"] or cfg["current"] != s["index"]:
-            cfg["volume"], cfg["current"] = s["volume"], s["index"]
+        if cfg["volume"] != s.volume or cfg["current"] != s.index:
+            cfg["volume"], cfg["current"] = s.volume, s.index
             self._save_timer.start()
 
     def _push(self, s):
@@ -102,12 +101,12 @@ class App:
         picture alone.
         """
         src = self.player.current_source()
-        art = self.artwork.for_source(src, s.get("path") or "")
-        tile = self.artwork.label_for(src)
-        self.overlay.set_state(s, art, tile)
-        self.window.update_state(s, art, tile)
+        art = self.artwork.for_source(src, s.path or "")
+        tile = art_label(src)
+        self.overlay.set_now_playing(s, art, tile)
+        self.window.set_now_playing(s, art, tile)
         if self.tray:
-            self.tray.update_state(s, art, tile)
+            self.tray.set_now_playing(s, art, tile)
 
     def refresh_state(self):
         self._push(self.player.snapshot())
@@ -119,7 +118,7 @@ class App:
         src = self.player.current_source()
         if not src or src.get("kind") != "stream" or src.get("site"):
             return
-        site = clean_site(s.get("icy_url") or "")
+        site = clean_site(s.icy_url)
         if site:
             src["site"] = site
             self.artwork.forget(src)        # drops the "no logo" marker
@@ -134,8 +133,7 @@ class App:
     def apply_theme(self):
         """Re-skin everything. The overlay is left out on purpose: it renders
         over games, so it stays dark and follows the overlay settings only."""
-        name = normalize_theme(self.config["theme"])
-        theme.set_current(theme.resolve(name))
+        theme.set_current(theme.resolve(self.config["theme"]))
         self.qapp.setStyleSheet(theme.stylesheet())
         if self.window:
             self.window.apply_theme()
@@ -148,22 +146,23 @@ class App:
         self._save_timer.start()
 
     def _scheme_changed(self, *_):
-        if normalize_theme(self.config["theme"]) == "auto":
+        if self.config["theme"] == "auto":
             self.apply_theme()
 
     # ------------------------------------------------------------------ overlay
     def set_overlay(self, on):
         on = bool(on)
         self.config["overlay"]["visible"] = on
-        self.hotkeys.single_keys_live = on
+        self.hotkeys.live = on
         self.overlay.set_on(on)
-        self.window.set_overlay_checked(on)
+        self.window.look.set_overlay_checked(on)
         if self.tray:
             self.tray.set_overlay_checked(on)
         self._save_timer.start()
 
-    def set_overlay_option(self, key, value):
-        self.config["overlay"][key] = value
+    def update_overlay(self, **changes):
+        """Change any of the card's settings in one go: reload, then save."""
+        self.config["overlay"].update(changes)
         self.overlay.reload_conf()
         self._save_timer.start()
 
@@ -174,49 +173,45 @@ class App:
         self.refresh_state()
         self.save()
 
-    def _sources_edited(self, keep):
-        self.player.sources_changed(keep)
-        self.window.refresh_sources()
+    def _sources_edited(self):
+        # The rows first: the player's state, emitted next, is what marks
+        # the one that is playing.
+        self.window.sources.refresh()
+        self.player.sources_changed()
         self.save()
 
     def add_sources(self, new):
-        keep = self.player.current_source()
         self.config["sources"].extend(new)
-        self._sources_edited(keep)
+        self._sources_edited()
 
     def remove_sources(self, rows):
-        keep = self.player.current_source()
         srcs = self.config["sources"]
         for r in sorted(rows, reverse=True):
             del srcs[r]
-        self._sources_edited(keep)
+        self._sources_edited()
 
     def reorder_sources(self, order):
-        keep = self.player.current_source()
         self.config["sources"][:] = order
-        self._sources_edited(keep)
+        self._sources_edited()
 
-    def artwork_changed(self, src):
-        self.artwork.forget(src)
-        self._sources_edited(self.player.current_source())
+    def edit_source(self, src, **changes):
+        """Change one source's settings; a value of None removes the setting.
 
-    def site_changed(self, src):
-        """The author said where the station lives: look for its logo again."""
-        self.artwork.refetch(src)
-        self._sources_edited(self.player.current_source())
-
-    def rename_source(self, src, name):
-        src["name"] = name
-        self._sources_edited(self.player.current_source())
-
-    def set_shuffle(self, src, on):
-        src["shuffle"] = on
-        self._sources_edited(self.player.current_source())
+        A new station page means the logo on disk came from the wrong one,
+        so it goes; a picture set or cleared only needs the cache dropped.
+        """
+        for key, value in changes.items():
+            if value is None:
+                src.pop(key, None)
+            else:
+                src[key] = value
+        if "site" in changes:
+            self.artwork.forget(src, logo=True)
+        elif "art" in changes:
+            self.artwork.forget(src)
+        self._sources_edited()
 
     # ------------------------------------------------------------------ window
-    def tray_available(self):
-        return self.tray is not None
-
     def show_window(self):
         self.window.show()
         self.window.raise_()

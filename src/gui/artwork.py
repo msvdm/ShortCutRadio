@@ -55,11 +55,6 @@ class Artwork(QObject):
         self._fetched.connect(self._on_fetched)
 
     # ------------------------------------------------------------------ lookup
-    @staticmethod
-    def label_for(source):
-        """What the tile says when there is no picture -- from the address."""
-        return art_label(source)
-
     def for_source(self, source, track_path=""):
         """The picture for a source, or None when the tile should be drawn."""
         if not source:
@@ -165,34 +160,22 @@ class Artwork(QObject):
             pass
 
     # ------------------------------------------------------------------ edits
-    def refetch(self, source):
-        """Throw away what we have for a station and look again.
+    def forget(self, source, logo=False):
+        """After a picture is set or cleared, or a station's site changes.
 
-        For when the author points ShortCutRadio at the right page: the logo on
-        disk came from the wrong one and has to go with it.
+        The "no logo here" marker always goes, so the next look tries again.
+        A logo already on disk cost a download, and clearing a hand-picked
+        picture should fall straight back to it -- so it is kept, unless
+        `logo`: the author pointed ShortCutRadio at the right page, and the logo
+        on disk came from the wrong one.
         """
         key = source_key(source)
         self._pixmaps.pop(key, None)
-        for ext in (".png", ".miss"):
+        for ext in (".png", ".miss") if logo else (".miss",):
             try:
                 os.remove(_file(key, ext))
             except OSError:
                 pass
-        self.changed.emit()
-
-    def forget(self, source):
-        """After a picture is set or cleared, or a station's site is learned.
-
-        A logo already on disk is kept -- it cost a download and clearing a
-        hand-picked picture should fall straight back to it. Only the "no
-        logo here" marker goes, so the next look tries again.
-        """
-        key = source_key(source)
-        self._pixmaps.pop(key, None)
-        try:
-            os.remove(_file(key, ".miss"))
-        except OSError:
-            pass
         picked = source.get("art")
         if picked:
             self._pixmaps.pop("file:" + picked, None)

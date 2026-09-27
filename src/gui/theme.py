@@ -14,6 +14,7 @@ The overlay card is deliberately not themed: it renders over games, so it stays
 dark and takes its colors from the user's overlay settings.
 """
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 
 DARK = {
@@ -101,12 +102,8 @@ def resolve(name):
     """"auto" -> what the desktop is set to, falling back to dark."""
     if name in ("dark", "light"):
         return name
-    hints = QGuiApplication.styleHints()
-    try:
-        scheme = hints.colorScheme() if hints else None
-    except AttributeError:                       # Qt < 6.5
-        return "dark"
-    return "light" if scheme is not None and scheme.name == "Light" else "dark"
+    scheme = QGuiApplication.styleHints().colorScheme()
+    return "light" if scheme == Qt.ColorScheme.Light else "dark"
 
 
 def set_current(resolved):

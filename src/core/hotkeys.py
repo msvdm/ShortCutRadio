@@ -4,7 +4,7 @@ pynput's X11 backend taps the XRECORD extension, the mechanism the NFSU2 radio
 proved: the key still reaches the focused app, and it fires through a
 fullscreen game's keyboard grab. Windows and macOS have their own backends.
 
-Every shortcut is live only while the overlay is on (`single_keys_live`); the
+Every shortcut is live only while the overlay is on (`live`); the
 one exception is the overlay toggle itself, which has to work to turn the
 overlay back on. Live combos are also grabbed (keygrab.py) so the focused app
 doesn't receive them: overlay on, the key is ShortCutRadio's; overlay off, the key
@@ -106,7 +106,7 @@ class Hotkeys(QObject):
         # for Latin-1, so without this a Cyrillic key cannot be grabbed at all
         # (see keygrab.keysym_for). Learned from every press, kept in the config.
         self.keysyms = {} if keysyms is None else keysyms
-        self._single_live = False
+        self._live = False
         self.grabber = KeyGrabber(self.ungrabbed.emit)
         self.set_bindings(bindings)
         self.capturing = False
@@ -122,18 +122,23 @@ class Hotkeys(QObject):
         self._update_grabs()
 
     @property
-    def single_keys_live(self):
-        return self._single_live
+    def live(self):
+        """True while the overlay is on: every shortcut works, and is taken."""
+        return self._live
 
-    @single_keys_live.setter
-    def single_keys_live(self, on):
-        self._single_live = bool(on)
+    @live.setter
+    def live(self, on):
+        self._live = bool(on)
         self._update_grabs()
+
+    def _is_live(self, action):
+        """The one rule: the overlay toggle always works, the rest only while live."""
+        return action == ALWAYS_LIVE or self._live
 
     def _update_grabs(self):
         live = []
         for combo, action in self.bindings.items():
-            if action != ALWAYS_LIVE and not self._single_live:
+            if not self._is_live(action):
                 continue
             mods, key = parse_combo(combo)
             live.append((combo, mods, key, self.keysyms.get(key)))
@@ -163,9 +168,6 @@ class Hotkeys(QObject):
 
     def begin_capture(self):
         self.capturing = True
-
-    def cancel_capture(self):
-        self.capturing = False
 
     # pynput thread ----------------------------------------------------------
     @staticmethod
@@ -198,7 +200,7 @@ class Hotkeys(QObject):
         self._down[name] = now
         combo = make_combo(self._mods, name)
         if DEBUG:
-            print(f"[hotkeys] {combo!r} live={self._single_live} repeat={repeat} "
+            print(f"[hotkeys] {combo!r} live={self._live} repeat={repeat} "
                   f"capturing={self.capturing} -> {self.bindings.get(combo)}", flush=True)
 
         if self.capturing:
@@ -209,9 +211,7 @@ class Hotkeys(QObject):
             return
 
         action = self.bindings.get(combo)
-        if action is None:
-            return
-        if action != ALWAYS_LIVE and not self._single_live:
+        if action is None or not self._is_live(action):
             return
         if repeat:
             # Only volume rides auto-repeat, and slower than X delivers it.

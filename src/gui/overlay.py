@@ -11,7 +11,9 @@ from PySide6.QtCore import QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-from .widgets import Meter, draw_art, fit_pixmap, draw_level_bars, level_bars_width
+from ..core.player import EMPTY_STATE
+from .art import FittedArt, draw_art
+from .widgets import Meter, draw_level_bars, level_bars_width
 
 PAD_X, PAD_Y, GAP = 14, 11, 2
 ART, ART_GAP, ART_RADIUS = 34, 11, 7
@@ -63,12 +65,11 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setWindowTitle("ShortCutRadio overlay")
-        self.state = {}
+        self.state = EMPTY_STATE
         self.flash = ""
         self.lines = ("", "")
         self._tick = 0
-        self._art = None            # already scaled to the card's art box
-        self._art_key = 0
+        self._art = FittedArt(dark=True)
         self.tile = ""              # what the generated art says, from the address
 
         self.meter = Meter(BARS, self)
@@ -88,21 +89,17 @@ class Overlay(QWidget):
         self.small_font = make_font(family, c["text_style"], c["track_size"], bold=False)
 
     # ------------------------------------------------------------------ state
-    def set_state(self, state, art=None, tile=""):
+    def set_now_playing(self, state, art=None, tile=""):
         old = self.state
         self.state = state
         self.tile = tile
         self.set_art(art)
-        if old and old.get("volume") != state.get("volume") and state.get("loaded"):
-            self.show_flash(f"Volume {state['volume']}%")
+        if old is not EMPTY_STATE and old.volume != state.volume and state.loaded:
+            self.show_flash(f"Volume {state.volume}%")
         self._relayout()
 
     def set_art(self, pixmap):
-        key = pixmap.cacheKey() if pixmap is not None and not pixmap.isNull() else 0
-        if key != self._art_key or self._art_size() != (self._art.width() if self._art else -1):
-            self._art_key = key
-            self._art = fit_pixmap(pixmap, self._art_size(),
-                                   self.devicePixelRatioF(), dark=True)
+        self._art.fit(pixmap, self._art_size(), self.devicePixelRatioF())
 
     def show_flash(self, text):
         self.flash = text
@@ -129,22 +126,23 @@ class Overlay(QWidget):
         s = self.state
         if self.flash:
             return self.flash
-        if not s or not s.get("count"):
-            return "No sources yet – add some in the ShortCutRadio window"
-        if s.get("error"):
-            return s["error"]
-        if not s.get("loaded"):
-            return f"Stopped – press {self.hint_key} to play" if self.hint_key else "Stopped"
-        if s.get("paused"):
-            return "Paused"
-        if s.get("connecting"):
-            return "Connecting…"
-        return s.get("track") or ""
+        match s.phase:
+            case "empty":
+                return "No sources yet – add some in the ShortCutRadio window"
+            case "error":
+                return s.error
+            case "stopped":
+                return f"Stopped – press {self.hint_key} to play" if self.hint_key else "Stopped"
+            case "paused":
+                return "Paused"
+            case "connecting":
+                return "Connecting…"
+        return s.track
 
     def _relayout(self):
         s = self.state
-        title = s.get("name") or "ShortCutRadio"
-        if s.get("loaded") and s.get("paused"):
+        title = s.name or "ShortCutRadio"
+        if s.loaded and s.paused:
             title = "❚❚  " + title
         lines = (title, self._second_line())
         if lines != self.lines:
@@ -163,14 +161,10 @@ class Overlay(QWidget):
         self._sync_meter()
         self.update()
 
-    def _playing(self):
-        s = self.state
-        return bool(s.get("loaded")) and not s.get("paused") and not s.get("connecting")
-
     def _sync_meter(self):
         """Bars move only while the card is up and something is audible: this
         repaints over a running game, so it must stop the moment it can."""
-        self.meter.set_running(self.isVisible() and self._playing())
+        self.meter.set_running(self.isVisible() and self.state.audible)
 
     def _art_size(self):
         """Never taller than the card: the card's size comes from the settings."""
@@ -182,7 +176,7 @@ class Overlay(QWidget):
     def _room(self):
         """Width left for the text, once the art and the meter have their share."""
         right = self.width() - PAD_X
-        if self._playing():
+        if self.state.audible:
             right -= level_bars_width(BARS, BAR_W, BAR_GAP) + BAR_LEFT
         return max(20, right - self._text_x())
 
@@ -225,9 +219,9 @@ class Overlay(QWidget):
 
     def reload_conf(self):
         self._apply_fonts()
-        self._art = fit_pixmap(self._art, self._art_size(),
-                               self.devicePixelRatioF(), dark=True)
         self._relayout()
+        # The card's height follows the fonts, and the art box follows it.
+        self._art.refit(self._art_size(), self.devicePixelRatioF())
 
     # ------------------------------------------------------------------ paint
     def paintEvent(self, _event):
@@ -247,8 +241,8 @@ class Overlay(QWidget):
         if art:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             draw_art(p, QRectF(PAD_X, (self.height() - art) / 2, art, art),
-                     ART_RADIUS, self._art, self.tile, dark=True)
-        if self._playing():
+                     ART_RADIUS, self._art.pixmap, self.tile, dark=True)
+        if self.state.audible:
             draw_level_bars(p, self.width() - PAD_X, self.height() / 2 + BAR_HIGH / 2,
                             self.meter.values, BAR_COLOR, BAR_W, BAR_GAP,
                             BAR_LOW, BAR_HIGH)

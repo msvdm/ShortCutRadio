@@ -13,12 +13,11 @@ thread. Nothing here raises for network trouble; None means "no logo".
 """
 
 import html
-import http.client
-import json
 import re
 import urllib.parse
 
-from .scraper import _open, classify
+from .net import NET_ERRORS, icecast_sources, open_url
+from .scraper import classify
 
 TIMEOUT_BYTES = 4 * 1024 * 1024
 MAX_TRY = 4                 # downloads before we give up on a page
@@ -73,18 +72,11 @@ def site_for_stream(stream_url):
 def icecast_site(stream_url):
     """The `server_url` an Icecast mount advertises, if this is one."""
     try:
-        p = urllib.parse.urlsplit(stream_url)
-        status = f"{p.scheme}://{p.netloc}/status-json.xsl"
-        with _open(status) as resp:
-            data = json.loads(resp.read(512 * 1024).decode("utf-8", "replace"))
-    except (OSError, ValueError, http.client.HTTPException):
+        want = urllib.parse.urlsplit(stream_url).path.rstrip("/")
+    except ValueError:
         return ""
-    sources = data.get("icestats", {}).get("source", [])
-    if isinstance(sources, dict):
-        sources = [sources]
-    want = p.path.rstrip("/")
     best = ""
-    for s in sources:
+    for s in icecast_sources(stream_url):
         url = clean_site(s.get("server_url") or "")
         if not url:
             continue
@@ -193,10 +185,10 @@ def image_size(data):
 
 def _download(url):
     try:
-        with _open(url) as resp:
+        with open_url(url) as resp:
             ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
             data = resp.read(TIMEOUT_BYTES)
-    except (OSError, ValueError, http.client.HTTPException):
+    except NET_ERRORS:
         return None
     if ct and not (ct.startswith("image/") or ct == "application/octet-stream"):
         return None

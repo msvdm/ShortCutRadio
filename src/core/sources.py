@@ -14,14 +14,16 @@ import os
 import random
 import urllib.parse
 
-from .scraper import name_from_url
-
 AUDIO_EXTS = {".mp3", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac",
               ".wav", ".wma", ".ape", ".wv", ".mka"}
 # Trailing words a mount name carries that say nothing about the station:
 # "fluid-128-mp3" is Fluid.
 NOISE = {"mp3", "aac", "aacp", "ogg", "opus", "flac", "hls", "kbps", "kb",
          "stream", "live", "audio", "high", "low", "hq", "lq"}
+# Path segments that name the mechanism, not the station.
+GENERIC_SEGMENTS = {"", "playlist.m3u8", "index.m3u8", "chunklist.m3u8", "master.m3u8",
+                    "stream", "live", "listen", "hls", "fls", "radio", "audio", "mp3",
+                    "aac", "icecast", "regstations", ";", "stream.mp3"}
 
 
 def make_stream(name, url, site=""):
@@ -51,6 +53,23 @@ def folder_tracks(path, shuffle=False, rng=random):
     if shuffle:
         rng.shuffle(tracks)
     return tracks
+
+
+def name_from_url(url):
+    """A readable name from a stream address: its last meaningful path segment."""
+    p = urllib.parse.urlsplit(url)
+    for seg in reversed(urllib.parse.unquote(p.path).split("/")):
+        s = seg.strip()
+        if s.lower() in GENERIC_SEGMENTS or s.isdigit():
+            continue
+        for suffix in (".m3u8", ".m3u", ".pls", ".mp3", ".aac", ".ogg", ".opus",
+                       ".stream", ".smil"):
+            if s.lower().endswith(suffix):
+                s = s[: -len(suffix)]
+        s = s.replace("-", " ").replace("_", " ").strip()
+        if s:
+            return s.title() if s == s.lower() else s
+    return p.hostname or url
 
 
 def _trim_noise(label):

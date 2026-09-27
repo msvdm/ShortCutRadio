@@ -7,7 +7,7 @@ file: `install_icon()` writes this same mark there, once.
 import os
 import sys
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, QSignalBlocker, Qt
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QHBoxLayout, QMenu, QSystemTrayIcon,
                                QVBoxLayout, QWidget, QWidgetAction)
@@ -145,30 +145,28 @@ class Tray(QSystemTrayIcon):
             self.app.toggle_window()
 
     def set_overlay_checked(self, on):
-        self.overlay_action.blockSignals(True)
-        self.overlay_action.setChecked(on)
-        self.overlay_action.blockSignals(False)
+        with QSignalBlocker(self.overlay_action):
+            self.overlay_action.setChecked(on)
 
     def set_theme_checked(self, name):
         act = self.theme_actions.get(name)
         if act:
-            act.blockSignals(True)
-            act.setChecked(True)
-            act.blockSignals(False)
+            with QSignalBlocker(act):
+                act.setChecked(True)
 
-    def update_state(self, s, art=None, tile=""):
-        playing = s["loaded"] and not s["paused"]
-        self.play_action.setText("Pause" if playing else "Play")
-        self.track_action.setEnabled(s["kind"] == "folder" and s["loaded"])
-        if not s["count"]:
-            tip = "ShortCutRadio — no sources"
-        elif not s["loaded"]:
-            tip = f"ShortCutRadio — stopped ({s['name']})"
-        else:
-            tip = f"ShortCutRadio — {s['name']}" + (f"\n{s['track']}" if s["track"] else "")
-            if s["paused"]:
-                tip += "\n(paused)"
+    def set_now_playing(self, s, art=None, tile=""):
+        self.play_action.setText("Pause" if s.playing else "Play")
+        self.track_action.setEnabled(s.can_skip_track)
+        match s.phase:
+            case "empty":
+                tip = "ShortCutRadio — no sources"
+            case "stopped" | "error":
+                tip = f"ShortCutRadio — stopped ({s.name})"
+            case _:
+                tip = f"ShortCutRadio — {s.name}" + (f"\n{s.track}" if s.track else "")
+                if s.paused:
+                    tip += "\n(paused)"
         self.setToolTip(tip)
-        self.header.name.setText(s["name"] or "ShortCutRadio")
-        self.header.track.setText(s["track"] if s["loaded"] else "")
+        self.header.name.setText(s.name or "ShortCutRadio")
+        self.header.track.setText(s.track)
         self.header.art.set_art(art, tile)

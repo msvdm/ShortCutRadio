@@ -1,6 +1,6 @@
 import base64
+import json
 import random
-import struct
 import time
 
 import pytest
@@ -8,15 +8,17 @@ import pytest
 from src.core import levels
 from src.core.artfetch import (image_size, logo_candidates, mentions, name_tokens,
                                site_for_stream)
-from src.core.config import normalize_theme, opacity_from_percent, transparency_percent
+from src.core.config import (Config, normalize_theme, opacity_from_percent,
+                              transparency_percent)
 from src.core.coverart import cover_file, embedded_art
 from src.core.hotkeys import Hotkeys, has_modifier, make_combo, parse_combo, pretty
 from src.core.keygrab import keysym_for
-from src.core.player import now_playing
-from src.core.scraper import clean_name, harvest, looks_streamy, name_from_url, parse_playlist
-from src.core.sources import art_label, folder_tracks
+from src.core.net import parse_icecast
+from src.core.player import EMPTY_STATE, make_state, now_playing
+from src.core.scraper import clean_name, harvest, looks_streamy, parse_playlist
+from src.core.sources import art_label, folder_tracks, name_from_url
 # QImage needs no QApplication, so the art maths can be tested like the rest.
-from src.gui.widgets import content_box, monogram
+from src.gui.art import content_box, monogram
 
 BADROCK_SNIPPET = """
 <a class="ext-stream-url" href="https://streams.badrockradio.net/hard-heavy">x</a>
@@ -101,7 +103,7 @@ def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     hk, fired = _hotkeys(play_pause="ctrl+e", vol_up="]")
-    hk.single_keys_live = True
+    hk.live = True
     hk._press(CTRL)
     e = keyboard.KeyCode(char="e", vk=101)
     hk._press(e)
@@ -121,7 +123,7 @@ def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
 
 def test_volume_still_rides_the_repeat():
     hk, fired = _hotkeys(vol_up="]")
-    hk.single_keys_live = True
+    hk.live = True
     for _ in range(3):
         hk._press(keyboard.KeyCode(char="]", vk=93))
         time.sleep(0.1)
@@ -135,7 +137,7 @@ def test_only_the_overlay_key_works_with_the_overlay_off():
     assert fired == []
     _tap(hk, CTRL, ALT, keyboard.KeyCode(char="r", vk=114))
     assert fired == ["overlay"]
-    hk.single_keys_live = True
+    hk.live = True
     _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
     assert fired == ["overlay", "play_pause"]
 
@@ -397,3 +399,55 @@ def test_renaming_a_source_does_not_change_its_art():
     was = art_label(folder)
     folder["name"] = "renamed"
     assert art_label(folder) == was
+
+
+def test_config_drops_unusable_sources_and_odd_themes(tmp_path):
+    good = {"name": "Fluid", "kind": "stream", "target": "https://x/fluid"}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"theme": "purple", "sources": [
+        good, {"name": "no target", "kind": "stream"}, "junk",
+        {"name": "odd kind", "kind": "video", "target": "x"}]}))
+    cfg = Config(str(path))
+    assert cfg["sources"] == [good]
+    assert cfg["theme"] == "auto"
+    path.write_text(json.dumps({"sources": {"not": "a list"}}))
+    assert Config(str(path))["sources"] == []
+
+
+def test_icecast_status_with_one_mount_is_still_a_list():
+    one = {"listenurl": "http://h:8000/a", "server_url": "https://a.fm"}
+    assert parse_icecast({"icestats": {"source": one}}) == [one]
+    assert parse_icecast({"icestats": {"source": [one, "junk"]}}) == [one]
+    assert parse_icecast({"icestats": {}}) == []
+    assert parse_icecast([]) == []
+
+
+IDLE_PROPS = {"metadata": None, "media-title": None, "path": None, "pause": False,
+              "volume": 70, "playlist-pos": None, "playlist-count": 0,
+              "core-idle": True, "idle-active": True}
+
+
+def test_state_phase_follows_one_ladder():
+    stream = {"name": "Fluid", "kind": "stream", "target": "https://x/fluid"}
+    folder = {"name": "Music", "kind": "folder", "target": "/m"}
+
+    def state(src=stream, count=1, error="", **props):
+        return make_state({**IDLE_PROPS, **props}, 0, src, count, error)
+
+    playing = {"idle-active": False, "core-idle": False}
+    assert EMPTY_STATE.phase == "empty"
+    assert state(src=None, count=0).phase == "empty"
+    assert state(error="Reconnecting…", **playing).phase == "error"
+    assert state().phase == "stopped"
+    paused = state(pause=True, **playing)
+    assert paused.phase == "paused" and paused.playing is False
+    connecting = state(**{"idle-active": False})
+    assert connecting.phase == "connecting" and not connecting.audible
+    on = state(**playing)
+    assert on.phase == "playing" and on.audible and on.playing
+    assert not on.can_skip_track
+    tracks = state(src=folder, path="/m/a.mp3", **{"playlist-pos": 2, "playlist-count": 9},
+                   **playing)
+    assert tracks.can_skip_track and (tracks.track_pos, tracks.track_count) == (3, 9)
+    assert tracks.track == "a"
+    assert state().track == "" and state().path is None     # nothing loaded
