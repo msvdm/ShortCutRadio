@@ -11,10 +11,12 @@ from src.core.artfetch import (image_size, logo_candidates, mentions, name_token
 from src.core.config import (Config, normalize_theme, opacity_from_percent,
                               transparency_percent)
 from src.core.coverart import cover_file, embedded_art
-from src.core.hotkeys import Hotkeys, has_modifier, make_combo, parse_combo, pretty
+from src.core.hotkeys import (Hotkeys, has_modifier, is_media, make_combo,
+                              parse_combo, pretty)
 from src.core.keygrab import keysym_for
 from src.core.net import parse_icecast
-from src.core.player import EMPTY_STATE, make_state, now_playing
+from src.core.player import EMPTY_STATE, PlayerState, make_state, now_playing
+from src.core.mpris import key_for, metadata, playback_status, player_props
 from src.core.scraper import clean_name, harvest, looks_streamy, parse_playlist
 from src.core.sources import art_label, folder_tracks, name_from_url
 # QImage needs no QApplication, so the art maths can be tested like the rest.
@@ -84,8 +86,8 @@ keyboard = pytest.importorskip("pynput.keyboard")
 CTRL, ALT = keyboard.Key.ctrl_l, keyboard.Key.alt_l
 
 
-def _hotkeys(**bindings):
-    hk = Hotkeys(bindings)
+def _hotkeys(media=False, **bindings):
+    hk = Hotkeys(bindings, media_via_desktop=media)
     hk.grabber.available = False
     fired = []
     hk.triggered.connect(fired.append)
@@ -149,6 +151,115 @@ def test_a_key_outside_latin1_is_grabbed_by_its_keysym():
     hk, _ = _hotkeys(overlay="alt+shift+\u0435")
     _tap(hk, ALT, keyboard.KeyCode(char="\u0435", vk=1765))
     assert hk.keysyms == {"\u0435": 1765}
+
+
+def test_a_bare_media_key_is_the_desktops():
+    assert is_media("media_play_pause") and is_media("media_stop")
+    assert not is_media("ctrl+media_next")      # the desktop binds the bare key
+    assert not is_media("media_volume_up")      # volume stays the system's
+    assert not is_media("e")
+
+
+def test_media_keys_come_from_the_desktop_not_the_listener(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    hk, fired = _hotkeys(media=True, play_pause="media_play_pause",
+                         source_next="ctrl+media_next", track_next=".")
+    grabbed = []
+    hk.grabber.set_combos = lambda combos: grabbed.extend(c[0] for c in combos)
+    hk.live = True
+    assert grabbed == ["ctrl+media_next", "."]  # the desktop holds the bare key
+    assert hk.media_keys() == {"media_play_pause"}
+    assert hk.via_desktop("media_play_pause") and not hk.via_desktop(".")
+    _tap(hk, keyboard.Key.media_play_pause)     # heard, but not acted on:
+    assert fired == []                          # the desktop's call is the one
+    hk.press_media("media_play_pause")
+    assert fired == ["play_pause"]
+    hk.press_media("media_next")                # bound only with Ctrl
+    assert fired == ["play_pause"]
+    hk.live = False                             # the overlay rule still holds
+    hk.press_media("media_play_pause")
+    assert fired == ["play_pause"]
+
+
+def test_capturing_a_media_key_does_not_also_press_it(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    hk, fired = _hotkeys(media=True, play_pause="media_play_pause")
+    hk.live = True
+    captured = []
+    hk.captured.connect(captured.append)
+    hk.begin_capture()
+    _tap(hk, keyboard.Key.media_play_pause)
+    assert captured == ["media_play_pause"]
+    clock[0] += 0.1                             # the desktop's call, right after
+    hk.press_media("media_play_pause")
+    assert fired == []
+    clock[0] += 2
+    hk.press_media("media_play_pause")
+    assert fired == ["play_pause"]
+
+
+def test_holding_a_media_key_toggles_once(monkeypatch):
+    # The desktop repeats a held key as a stream of calls with no release;
+    # the listener, which hears the key too, is what marks them as repeats.
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    hk, fired = _hotkeys(media=True, play_pause="media_play_pause")
+    hk.live = True
+    play = keyboard.Key.media_play_pause
+    hk._press(play)
+    hk.press_media("media_play_pause")
+    clock[0] += 0.5
+    for _ in range(30):
+        hk._press(play)
+        hk.press_media("media_play_pause")
+        clock[0] += 0.03
+    hk._release(play)
+    hk.press_media("media_play_pause")      # the last repeat's call, late
+    assert fired == ["play_pause"]
+    clock[0] += 0.3
+    hk._press(play)
+    hk.press_media("media_play_pause")
+    assert fired == ["play_pause", "play_pause"]
+
+
+def test_without_the_desktop_media_keys_are_plain_shortcuts():
+    hk, fired = _hotkeys(play_pause="media_play_pause")
+    hk.live = True
+    assert hk.media_keys() == set()
+    _tap(hk, keyboard.Key.media_play_pause)
+    assert fired == ["play_pause"]
+
+
+def test_mpris_speaks_for_the_player_state():
+    playing = PlayerState(count=2, index=1, name="Fluid", kind="stream", loaded=True,
+                          track="Artist - Song", volume=70)
+    paused = PlayerState(count=2, name="Fluid", kind="stream", loaded=True, paused=True)
+    assert playback_status(playing) == "Playing"
+    assert playback_status(PlayerState(count=1, loaded=True, connecting=True)) == "Playing"
+    assert playback_status(paused) == "Paused"
+    assert playback_status(PlayerState(count=1)) == "Stopped"
+    assert playback_status(EMPTY_STATE) == "Stopped"
+    assert metadata(playing, "file:///a.png") == {
+        "mpris:trackid": "/org/shortcutradio/source1", "xesam:title": "Artist - Song",
+        "xesam:artist": ["Fluid"], "mpris:artUrl": "file:///a.png"}
+    # No track: the station is the title, and no empty artist list goes out.
+    assert metadata(paused) == {"mpris:trackid": "/org/shortcutradio/source0",
+                                "xesam:title": "Fluid"}
+    props = player_props(playing, {"media_play_pause", "media_next"})
+    assert props["CanPlay"] and props["CanGoNext"] and not props["CanGoPrevious"]
+    assert props["Volume"] == 0.7 and props["CanSeek"] is False
+
+
+def test_mpris_methods_become_keys():
+    assert key_for("PlayPause", True) == "media_play_pause"
+    assert key_for("Play", False) == "media_play_pause"
+    assert key_for("Play", True) is None        # the applet's Play never pauses
+    assert key_for("Pause", False) is None
+    assert key_for("Next", False) == "media_next"
+    assert key_for("Previous", True) == "media_previous"
+    assert key_for("Seek", True) is None
 
 
 def test_now_playing():

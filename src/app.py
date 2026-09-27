@@ -15,10 +15,11 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 from .core.artfetch import clean_site
 from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, pretty
+from .core.mpris import Mpris
 from .core.player import Player
 from .core.sources import art_label
 from .gui import theme
-from .gui.artwork import Artwork
+from .gui.artwork import Artwork, cache_dir
 from .gui.main_window import MainWindow
 from .gui.overlay import Overlay
 from .gui.tray import Tray, install_icon, make_icon
@@ -45,11 +46,12 @@ class App:
 
         self.artwork = Artwork()
         self.player = Player(cfg["sources"], cfg["current"], cfg["volume"])
-        self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"])
+        self.mpris = Mpris(cache_dir())
+        self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"],
+                               media_via_desktop=self.mpris.available)
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
         self.window = MainWindow(self)
         self.tray = Tray(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
-        self._told_hidden = False
 
         self._save_timer = QTimer(singleShot=True, interval=SAVE_DELAY_MS)
         self._save_timer.timeout.connect(self.save)
@@ -59,6 +61,8 @@ class App:
         self.hotkeys.triggered.connect(self._on_action)
         self.hotkeys.captured.connect(self.window.shortcuts.on_captured)
         self.hotkeys.ungrabbed.connect(self.window.shortcuts.on_ungrabbed)
+        self.mpris.pressed.connect(self.hotkeys.press_media)
+        self.mpris.raise_requested.connect(self.show_window)
 
         self.actions = {
             "overlay": lambda: self.set_overlay(not cfg["overlay"]["visible"]),
@@ -104,6 +108,7 @@ class App:
         art = self.artwork.for_source(src, s.path or "")
         tile = art_label(src)
         self.overlay.set_now_playing(s, art, tile)
+        self.mpris.set_state(s, art)
         self.window.set_now_playing(s, art, tile)
         if self.tray:
             self.tray.set_now_playing(s, art, tile)
@@ -154,11 +159,19 @@ class App:
         on = bool(on)
         self.config["overlay"]["visible"] = on
         self.hotkeys.live = on
+        self._sync_media()
         self.overlay.set_on(on)
         self.window.look.set_overlay_checked(on)
         if self.tray:
             self.tray.set_overlay_checked(on)
         self._save_timer.start()
+
+    def _sync_media(self):
+        """Be the desktop's media player only while the overlay is on and a
+        media key is bound; otherwise those keys belong to other players."""
+        keys = self.hotkeys.media_keys()
+        self.mpris.set_keys(keys)
+        self.mpris.set_active(self.config["overlay"]["visible"] and bool(keys))
 
     def update_overlay(self, **changes):
         """Change any of the card's settings in one go: reload, then save."""
@@ -169,6 +182,7 @@ class App:
     # ------------------------------------------------------------------ edits
     def shortcuts_changed(self):
         self.hotkeys.set_bindings(self.config["shortcuts"])
+        self._sync_media()
         self.overlay.hint_key = pretty(self.config["shortcuts"]["play_pause"])
         self.refresh_state()
         self.save()
@@ -222,12 +236,6 @@ class App:
             self.window.hide()
         else:
             self.show_window()
-
-    def notify_hidden_once(self):
-        if self.tray and not self._told_hidden:
-            self._told_hidden = True
-            self.tray.showMessage("ShortCutRadio", "Still running in the tray.",
-                                  self.icon, 3000)
 
     def save(self):
         try:

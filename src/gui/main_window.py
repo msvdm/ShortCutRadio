@@ -160,8 +160,9 @@ class MainWindow(FramelessWindow):
         # to Overlay and back grew the window by a hundred pixels every round
         # trip. Pinning it keeps the hints still. The height fits the Overlay
         # tab, which is the densest page now that the hero is on all three.
+        # It opens at that minimum too: the author's chosen size, measured.
         self.setMinimumSize(640 + 2 * RESIZE_MARGIN, 600 + 2 * RESIZE_MARGIN)
-        self.resize(900 + 2 * RESIZE_MARGIN, 600 + 2 * RESIZE_MARGIN)
+        self.resize(self.minimumSize())
 
         self.hero = Hero(app)
         self.sources = SourcesPage(app)
@@ -248,6 +249,5 @@ class MainWindow(FramelessWindow):
         if self.app.tray is not None:
             event.ignore()
             self.hide()
-            self.app.notify_hidden_once()
         else:
             self.app.quit()

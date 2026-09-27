@@ -10,6 +10,10 @@ overlay back on. Live combos are also grabbed (keygrab.py) so the focused app
 doesn't receive them: overlay on, the key is ShortCutRadio's; overlay off, the key
 is free -- including combos like Ctrl+E, which the app in front may want.
 
+The keyboard's media keys are the exception to all of this: the desktop owns
+them, so a bare media key is not observed or grabbed here but delivered by the
+desktop's player channel (mpris.py) through `press_media` -- see `via_desktop`.
+
 Combo strings are "ctrl+alt+r", "'", "f9", "shift+page_down": modifiers in a
 fixed order, then the key. The same normaliser builds them for capture and for
 matching, so whatever the settings UI recorded is exactly what will match.
@@ -38,12 +42,19 @@ MOD_NAMES = {
     "shift": "shift", "shift_l": "shift", "shift_r": "shift",
     "cmd": "super", "cmd_l": "super", "cmd_r": "super",
 }
+# Media keys pynput has no name for, by vk: XF86AudioStop's keysym on X11,
+# VK_MEDIA_STOP on Windows. Neither stands for a key that types a character.
+MEDIA_VKS = {0x1008FF15: "media_stop", 0xB2: "media_stop"}
+# The desktop's media channel delivers these (mpris.py). Volume and mute stay
+# the system's: those keys are never ShortCutRadio's.
+MEDIA_KEYS = {"media_play_pause", "media_next", "media_previous", "media_stop"}
 REPEATABLE = {"vol_up", "vol_down"}
 ALWAYS_LIVE = "overlay"     # the only action that works with the overlay off
 DEBUG = os.environ.get("SHORTCUTRADIO_DEBUG_KEYS") == "1"
 DEBOUNCE_S = 0.25
 REPEAT_S = 0.09             # how fast a held volume key may repeat
 REPEAT_GAP_S = 2.0          # a longer gap means we missed the release
+CAPTURE_ECHO_S = 1.0        # the desktop's call for a media key just recorded
 
 
 def parse_combo(combo):
@@ -59,6 +70,13 @@ def parse_combo(combo):
 
 def make_combo(mods, key):
     return "+".join([m for m in MOD_ORDER if m in mods] + [key])
+
+
+def is_media(combo):
+    """A bare media key: the desktop's to deliver. Ctrl+Next is not -- the
+    desktop binds the bare key only -- so it stays an ordinary shortcut."""
+    mods, key = parse_combo(combo)
+    return not mods and key in MEDIA_KEYS
 
 
 def has_modifier(combo):
@@ -91,7 +109,9 @@ def key_name(key, canonical=None):
     if char:
         return char.lower()
     vk = getattr(key, "vk", None)
-    return f"vk{vk}" if vk is not None else None
+    if vk is None:
+        return None
+    return MEDIA_VKS.get(vk, f"vk{vk}")
 
 
 class Hotkeys(QObject):
@@ -99,8 +119,11 @@ class Hotkeys(QObject):
     captured = Signal(str)      # combo recorded in capture mode ("esc" = cancel)
     ungrabbed = Signal(list)    # live combos the focused app still receives
 
-    def __init__(self, bindings, keysyms=None):
+    def __init__(self, bindings, keysyms=None, media_via_desktop=False):
         super().__init__()
+        # True when the desktop's player channel is there (mpris.py) to deliver
+        # the media keys; without it they stay plain observed shortcuts.
+        self.media_via_desktop = media_via_desktop
         self.bindings = {}
         # Key name -> the X keysym it came from. `ord(char)` is the keysym only
         # for Latin-1, so without this a Cyrillic key cannot be grabbed at all
@@ -113,6 +136,8 @@ class Hotkeys(QObject):
         self._mods = set()
         self._last = {}
         self._down = {}         # key name -> when it was last pressed
+        self._capture_end = 0.0
+        self._repeating = {}    # media key -> its last press was a repeat
         self._listener = None
         self.error = IMPORT_ERROR
 
@@ -135,10 +160,51 @@ class Hotkeys(QObject):
         """The one rule: the overlay toggle always works, the rest only while live."""
         return action == ALWAYS_LIVE or self._live
 
+    def via_desktop(self, combo):
+        """This combo reaches us from the desktop's media channel, not the
+        listener. The desktop holds the key itself, so it is not grabbed --
+        a grab would only fail and show a warning for nothing."""
+        return self.media_via_desktop and is_media(combo)
+
+    def media_keys(self):
+        """The media keys bound to something: what the desktop should send us."""
+        return {parse_combo(c)[1] for c in self.bindings if self.via_desktop(c)}
+
+    def press_media(self, name):
+        """A media key the desktop delivered. Same bindings, same overlay rule
+        and same repeat rule as a key the listener saw.
+
+        The desktop passes X's auto-repeat straight on (a 1.5 s hold of Play
+        sent 34 calls) and says nothing about releases, but the listener
+        still hears the key itself, so it is the one that knows a repeat.
+        """
+        action = self.bindings.get(name)
+        if DEBUG:
+            print(f"[hotkeys] desktop {name!r} live={self._live} "
+                  f"repeat={self._repeating.get(name, False)} -> {action}", flush=True)
+        if action is None or not self._is_live(action) or self.capturing:
+            return
+        now = time.monotonic()
+        if now - self._capture_end < CAPTURE_ECHO_S:
+            return      # the key that was just recorded, echoed by the desktop
+        self._fire(action, self._repeating.get(name, False), now)
+
+    def _fire(self, action, repeat, now):
+        """Only volume rides auto-repeat, and slower than X delivers it; a
+        fresh press is still debounced."""
+        since = now - self._last.get(action, 0)
+        if repeat:
+            if action not in REPEATABLE or since < REPEAT_S:
+                return
+        elif since < DEBOUNCE_S:
+            return
+        self._last[action] = now
+        self.triggered.emit(action)
+
     def _update_grabs(self):
         live = []
         for combo, action in self.bindings.items():
-            if not self._is_live(action):
+            if not self._is_live(action) or self.via_desktop(combo):
                 continue
             mods, key = parse_combo(combo)
             live.append((combo, mods, key, self.keysyms.get(key)))
@@ -207,20 +273,19 @@ class Hotkeys(QObject):
             if repeat:              # the tail of a held key is not a choice
                 return
             self.capturing = False
+            self._capture_end = now
             self.captured.emit(combo)
             return
 
+        if self.via_desktop(combo):
+            # The desktop delivers it (press_media): acting here too would
+            # toggle twice. What only the listener knows is whether it repeats.
+            self._repeating[name] = repeat
+            return
         action = self.bindings.get(combo)
         if action is None or not self._is_live(action):
             return
-        if repeat:
-            # Only volume rides auto-repeat, and slower than X delivers it.
-            if action not in REPEATABLE or now - self._last.get(action, 0) < REPEAT_S:
-                return
-        elif now - self._last.get(action, 0) < DEBOUNCE_S:
-            return
-        self._last[action] = now
-        self.triggered.emit(action)
+        self._fire(action, repeat, now)
 
     def _release(self, key):
         name = key_name(key)
@@ -231,6 +296,8 @@ class Hotkeys(QObject):
             # so its release would not match its press. Forget what is held.
             self._down.clear()
         else:
+            # `_repeating` stays: the desktop's call for the last repeat can
+            # land after the release. The next press is what resets it.
             self._down.pop(name, None)
 
     def _learn_keysym(self, name, key):

@@ -44,6 +44,8 @@ src/core/coverart.py      a local track's cover: a file beside it, or ID3/FLAC/O
 src/core/levels.py        the level meters' numbers (pure, so they can be tested)
 src/core/hotkeys.py       pynput listener (observes) + gating + capture mode
 src/core/keygrab.py       X11 passive grabs so live keys don't reach the focused app
+src/core/mpris.py         media keys: ShortCutRadio as an MPRIS player (QtDBus), sound applet
+src/core/mediakeys.py     media keys: the settings daemon's claim (jeepney)
 src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
 src/gui/widgets.py        the hand-painted parts: pill switch, transport, meters, labels
 src/gui/art.py            the art box: trim, fit, backdrop, initials tile (FittedArt)
@@ -58,7 +60,7 @@ tests/test_core.py        pytest, pure functions only
 ```
 
 Stack: Python 3.12, PySide6, python-mpv (needs system libmpv2), pynput,
-python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout.
+python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.venv/`. It matches the author's AnyDMX project layout.
 
 ## Decisions — do not re-litigate
 
@@ -80,6 +82,24 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   each action fires once, and it also sees keys inside fullscreen Wine games,
   where the game's own keyboard grab beats our passive grabs. There the key
   reaches the game too, which is unavoidable: pick keys the game doesn't use.
+- **Media keys go through the desktop, not the listener + a grab.** Muffin
+  owns bare XF86AudioPlay/Next/Prev/Stop and csd-media-keys passes each press
+  to a player -- with no player it showed a big "Unavailable" every time the
+  author pressed Play, even though the listener had acted on it. So a *bare*
+  media key bound in ShortCutRadio is neither grabbed nor acted on by the listener
+  (`Hotkeys.via_desktop`); the desktop delivers it (`press_media`) and it goes
+  through the same bindings, so the Next key can mean "next source". Two
+  channels, both needed: the claim (`mediakeys.py`, GrabMediaPlayerKeys),
+  because csd serves claimed apps before MPRIS players and gives MPRIS players
+  the keys first come, first served -- a browser with a video tab that got
+  there first kept the Play key with our overlay on; and the MPRIS player
+  (`mpris.py`) for the sound applet and for desktops without the claim (KDE).
+  The author chose the overlay rule for these too: ShortCutRadio is a player and
+  holds the claim only while the overlay is on **and** a media key is bound
+  (`App._sync_media`); otherwise it is off the bus and the keys go wherever
+  they would without ShortCutRadio. Ctrl+Next and the like stay ordinary grabbed
+  shortcuts (the desktop binds the bare key only). Volume/mute keys stay the
+  system's. Without a session bus the media keys fall back to the listener.
 - **Folders are expanded in Python** (walk → sort/shuffle → temp m3u →
   `loadlist`), and `loop-playlist=inf` is set for folders, `no` for streams.
   This makes shuffle and skip behave the same on mpv 0.37, where `loadfile`
@@ -97,7 +117,8 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   the source list surprised the first build. The edges call Qt's
   `startSystemResize`, the rest `startSystemMove`, both with a manual fallback.
   The only chrome is the × at the hero's top right; it and Esc hide to the
-  tray, exactly as closing always did.
+  tray, exactly as closing always did -- silently: the author disliked the
+  "still running in the tray" notice, so there is none.
 - **The hero is the same on all three tabs.** It first shrank to a compact
   strip on Shortcuts and disappeared on Overlay; the author disliked exactly
   that. One `Hero`, full size, always visible: what is playing and its
@@ -273,6 +294,25 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   repaint the bars stay frozen on screen instead of disappearing, so
   `Meter.set_running(False)` emits one last `tick` and every consumer repaints
   without them.
+- **PySide6's QtDBus mis-types what the spec insists on.** `createReply(list)`
+  sends the list as *one* argument (build the reply empty, then
+  `setArguments`); an empty Python list goes out as `av` where MPRIS says `as`
+  (build it typed, `mpris._no_strings`); a Python int is always `i` (`q`
+  through QDBusArgument) and nothing makes a `u` or an `x`. `Position` is left
+  out for that reason (the applet only reads it when `CanSeek`), and the claim
+  -- `GrabMediaPlayerKeys(su)`, csd rejects `(si)` -- is sent with jeepney.
+- **csd drops a claim when the claiming connection closes**, and sends the
+  key signal *to that connection only*. So the claim lives on its own jeepney
+  connection whose socket Qt's event loop reads (`QSocketNotifier`); closing
+  it is the release, a crash included. On Cinnamon the service is the old
+  shared name `org.gnome.SettingsDaemon`, path `/org/gnome/SettingsDaemon/MediaKeys`.
+- **The desktop passes a held media key's auto-repeat straight on** (a 1.5 s
+  hold of Play: 34 calls, no release) and the last repeat's call can land
+  *after* the listener has seen the release. The listener still hears media
+  keys, so it marks each press as a repeat or not (`Hotkeys._repeating`) and
+  `press_media` applies the same rule as for any key. The mark survives the
+  release on purpose; the next real press resets it, and the listener always
+  sees that press before the desktop's call arrives (measured).
 - **Wayland is not supported** (pynput and X grabs are X11-only). Mint is X11 today.
 
 ## Testing
@@ -299,6 +339,16 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
   Synthetic keys type into whatever window has focus: focus a test window
   first and check it is active before each tap. One test typed `[[[[` into
   the author's chat box.
+- **Media key tests:** python-xlib's `XK` doesn't know the XF86 names without
+  loading them, so fake the keysym number (Play 0x1008FF14, Next 0x1008FF17,
+  Stop 0x1008FF15) -- it goes the whole way, Muffin → csd → ShortCutRadio. Media keys
+  type nothing into the focused window. Watch with `dbus-monitor --session
+  "type='signal',member='MediaPlayerKeyPressed'"`, read state with `gdbus call
+  --session --dest org.mpris.MediaPlayer2.shortcutradio --object-path
+  /org/mpris/MediaPlayer2 --method org.freedesktop.DBus.Properties.Get
+  org.mpris.MediaPlayer2.Player PlaybackStatus`. A tiny QDBusVirtualObject
+  registered as `org.mpris.MediaPlayer2.<x>` *before* ShortCutRadio starts stands in
+  for the browser that got there first.
 - Stopping a test instance: match `^.venv/bin/python shortcutradio`. A bare
   `pkill -f "python shortcutradio.py"` also kills the shell that ran it.
 - A GUI started with the chat's `!` prefix dies when that command returns. The
@@ -310,7 +360,10 @@ python-xlib. The venv is `.venv/`. It matches the author's AnyDMX project layout
 
 Packaging (PyInstaller / AppImage / Windows zip with mpv-2.dll), game hooks (e.g.
 NFSU2 world-load autostart, in the style of the old radio's `/proc/<pid>/fd`
-check), MPRIS/SMTC media keys, Windows/macOS key suppression (pynput
+check), media keys on Windows (SMTC) and macOS (Now Playing) -- same seam as
+`Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`); until
+then they fall back to the listener, which is fine there as no "Unavailable"
+shows -- Windows/macOS key suppression (pynput
 `win32_event_filter` / `darwin_intercept`), and confirming the overlay over
 fullscreen NFSU2. The tray menu's skin is unconfirmed on this desktop: if
 Cinnamon serves the tray over StatusNotifier/DBus the menu is drawn by the

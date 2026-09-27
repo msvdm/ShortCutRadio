@@ -23,6 +23,9 @@ CAPTURE_TIP = ("Click, then press the new key (Esc cancels, Backspace clears).\n
 UNGRABBED_TIP = ("This key cannot be taken: either another program already holds\n"
                  "it, or this keyboard has no such key. The app you are using\n"
                  "will receive it too. Record it again on the layout you type in.")
+MEDIA_TIP = ("A media key: your desktop hands it to ShortCutRadio as its media player,\n"
+             "while the overlay is on. With the overlay off it goes to other players.\n"
+             "Click to record a different key.")
 HELP_TEXT = ("The keyboard shortcuts work only while the overlay is active - all of them "
              "except the one that turns the overlay on, which always works. If you want "
              "to free the keys up for other purposes - such as typing - disable the "
@@ -80,11 +83,12 @@ class ShortcutRow(QFrame):
         if on:
             self.key.setText("press a key…")
 
-    def show_combo(self, combo, leaks):
-        """`leaks`: the key could not be taken, so the focused app gets it too."""
+    def show_combo(self, combo, leaks, media=False):
+        """`leaks`: the key could not be taken, so the focused app gets it too.
+        `media`: the desktop delivers it (see core/mpris.py)."""
         self.set_capturing(False)
         self.key.setText(pretty(combo) + (" ⚠" if leaks else ""))
-        self.key.setToolTip(UNGRABBED_TIP if leaks else CAPTURE_TIP)
+        self.key.setToolTip(UNGRABBED_TIP if leaks else MEDIA_TIP if media else CAPTURE_TIP)
         self.key.setDown(False)
 
 
@@ -129,7 +133,8 @@ class ShortcutsPage(QWidget):
         sc = self.app.config["shortcuts"]
         for row in self.rows:
             combo = sc.get(row.action, "")
-            row.show_combo(combo, bool(combo) and combo in self._ungrabbed)
+            row.show_combo(combo, bool(combo) and combo in self._ungrabbed,
+                           self.app.hotkeys.via_desktop(combo))
 
     def on_ungrabbed(self, combos):
         """The grabber's report: which live shortcuts the focused app still
