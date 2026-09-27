@@ -375,9 +375,12 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   `pkill -f "^/home/.../dist/ShortCutRadio/shortcutradio"` -- anchored, for the same
   reason as above.
 - A GUI started with the chat's `!` prefix dies when that command returns. The
-  author launches via the menu entry `~/.local/share/applications/shortcutradio.desktop`
-  (`Icon=shortcutradio`, installed by `install_icon()`). Cinnamon caches the menu,
-  so a changed icon can take a re-login to show.
+  menu has two entries: **ShortCutRadio** is the installed .deb
+  (`/usr/share/applications/shortcutradio.desktop`), **ShortCutRadio (dev)** runs this
+  checkout (`~/.local/share/applications/shortcutradio-dev.desktop`). The dev one
+  must not be named `shortcutradio.desktop`: a user entry of the same name hides
+  the package's. Both share `~/.config/ShortCutRadio`, so only one runs at a time.
+  Cinnamon caches the menu, so a changed icon can take a re-login to show.
 
 ## Not done yet
 
