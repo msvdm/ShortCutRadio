@@ -7,3 +7,17 @@ dist/
 # portable mode keeps settings next to the app
 shortcutradio.portable
 data/
+
+# editors and OS clutter
+.claude/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# credentials (safety)
+.env
+*.key
+*.pem

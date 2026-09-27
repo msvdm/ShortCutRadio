@@ -26,8 +26,9 @@ portable (one folder) → cross-platform (Windows, macOS).
 1. **Keep it simple.** Minimal code, no speculative features.
 2. **Never crash on I/O.** Dead streams retry, unreadable config falls back to
    defaults, and scraper errors end up as an empty result.
-3. **No README/requirements files until the author asks.** They'll be written
-   once the app is ready.
+3. **The README stays short and plain.** It is for people who are not
+   programmers: what the app does and how to start it, no internals. Update
+   it when something a user sees changes; the reasoning belongs here.
 
 ## Architecture
 
@@ -57,6 +58,8 @@ src/gui/overlay_page.py     the card's look
 src/gui/artwork.py        which picture a source gets, cached on disk, fetched off-thread
 src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
+README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
+requirements.txt          pip dependencies (libmpv comes from the system)
 ```
 
 Stack: Python 3.12, PySide6, python-mpv (needs system libmpv2), pynput,
@@ -372,5 +375,6 @@ its header is drawn by ShortCutRadio either way, but has not been seen.
 
 ## Git
 
-Private repo `msvdm/ShortCutRadio`, branch `main`. End commits with
+Public repo `msvdm/ShortCutRadio` (MIT), branch `main`. Everything pushed is
+published: no personal paths, configs or keys in commits. End commits with
 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
