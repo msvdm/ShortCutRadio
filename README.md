@@ -63,6 +63,11 @@ python3 -m venv .venv
   folder instead of your home folder. Then the whole folder can move to
   another machine.
 
+**Build it yourself:** `packaging/build.sh` makes two files in `dist/`. One is
+a `.deb` you install with a double-click, which adds ShortCutRadio to your menu.
+The other is a portable folder (`.tar.gz`) that keeps its settings inside
+itself. Both use the system's mpv library (`libmpv2`).
+
 ## Status
 
 It works well on Linux (X11) and I use it every day. Next on the list:

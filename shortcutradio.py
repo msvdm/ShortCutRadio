@@ -3,11 +3,17 @@
 
     shortcutradio.py            start (opens the setup window)
     shortcutradio.py --hidden   start straight to the tray
+    shortcutradio.py --version  print the version and exit (starts nothing)
 """
 
 import sys
 
-from src.app import main
-
 if __name__ == "__main__":
+    if "--version" in sys.argv[1:]:
+        # Before Qt is imported: this is how a build is checked for life.
+        from src import __version__
+        print(f"ShortCutRadio {__version__}")
+        sys.exit(0)
+
+    from src.app import main
     sys.exit(main())

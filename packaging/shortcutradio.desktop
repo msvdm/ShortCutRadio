@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ShortCutRadio
+GenericName=Radio and music player
+Comment=Radio and music player with a corner overlay, driven by shortcuts
+Exec=shortcutradio
+Icon=shortcutradio
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=radio;internet radio;stream;music;player;overlay;
+StartupWMClass=ShortCutRadio

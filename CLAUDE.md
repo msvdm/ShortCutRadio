@@ -60,6 +60,8 @@ src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
 requirements.txt          pip dependencies (libmpv comes from the system)
+shortcutradio.spec             PyInstaller: one folder, dist/ShortCutRadio/, libmpv left out
+packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop
 ```
 
 Stack: Python 3.12, PySide6, python-mpv (needs system libmpv2), pynput,
@@ -216,6 +218,17 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   3 s. Click-through was verified: its X input shape is empty. Drawing over a
   fullscreen game works because Muffin keeps compositing fullscreen windows
   (`unredirect-fullscreen-windows=false`).
+- **The Linux build is a folder, with the system's libmpv.** PyInstaller
+  onedir, not one file: portability is "one folder", the app may start at
+  every login (one-file unpacks ~100 MB each time), and the LGPL libraries
+  stay replaceable files. PyInstaller spots python-mpv's `find_library("mpv")`
+  and bundles libmpv with all of ffmpeg (385 MB instead of 173); the spec
+  drops libmpv and every library only it needed (an `ldd` difference, so
+  what Qt or Python also load stays). python-mpv then finds the system's, and
+  the .deb depends on `libmpv2`. Two downloads, one job each: the `.deb`
+  installs (menu, icon, settings in `~/.config`), the tarball is portable
+  (it ships with `shortcutradio.portable`, settings in `data/` beside the app).
+  `--version` answers before Qt is imported; the build checks it.
 
 ## Traps — measured, do not re-litigate
 
@@ -354,6 +367,13 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   for the browser that got there first.
 - Stopping a test instance: match `^.venv/bin/python shortcutradio`. A bare
   `pkill -f "python shortcutradio.py"` also kills the shell that ran it.
+- **Build:** `packaging/build.sh` (runs the tests first). To prove a build
+  plays, start `dist/ShortCutRadio/shortcutradio --hidden` on a scratch config with
+  volume 0, every shortcut on Ctrl+Alt+Shift+F-keys, Play/Pause on
+  `media_play_pause` and the overlay on (so MPRIS is up), then `gdbus call
+  ... Player.Play` and read `PlaybackStatus` and `Metadata`. Stop it with
+  `pkill -f "^/home/.../dist/ShortCutRadio/shortcutradio"` -- anchored, for the same
+  reason as above.
 - A GUI started with the chat's `!` prefix dies when that command returns. The
   author launches via the menu entry `~/.local/share/applications/shortcutradio.desktop`
   (`Icon=shortcutradio`, installed by `install_icon()`). Cinnamon caches the menu,
@@ -361,7 +381,9 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
 
 ## Not done yet
 
-Packaging (PyInstaller / AppImage / Windows zip with mpv-2.dll), game hooks (e.g.
+A GitHub Actions release (build on the oldest supported Ubuntu, so the
+glibc floor drops below this machine's 2.39), a Windows zip with mpv-2.dll
+(check that DLL's GPL/LGPL build against the MIT app first), game hooks (e.g.
 NFSU2 world-load autostart, in the style of the old radio's `/proc/<pid>/fd`
 check), media keys on Windows (SMTC) and macOS (Now Playing) -- same seam as
 `Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`); until
