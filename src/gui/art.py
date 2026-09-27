@@ -21,7 +21,7 @@ PROBE = 96              # art is measured on a copy this big, not full size
 TRIM_TOL = 14           # how near the corner's colour still counts as border
 TRIM_MAX = 0.42         # never trim more than this much off one side
 
-# The overlay and the tray menu are drawn dark whatever the theme is.
+# The overlay is drawn dark whatever the theme is.
 DARK_TILE = {"tile_sat": 120, "tile_val": 96, "tile_text": "#f1f3f6",
              "art_dark": "#1b1f26", "art_light": "#e8eaee"}
 
@@ -201,5 +201,9 @@ class FittedArt:
         self.pixmap = fit_pixmap(pixmap, size, dpr, self.dark)
         return True
 
-    def refit(self, size, dpr):
+    def refit(self, size, dpr, force=False):
+        """Fit the same picture again: to a new box, or (`force`) after a
+        theme change, which can change a cut-out logo's backdrop."""
+        if force:
+            self._key = None
         return self.fit(self._source, size, dpr)

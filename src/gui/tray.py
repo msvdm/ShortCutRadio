@@ -2,13 +2,20 @@
 
 The one place a drawn icon is not enough is the desktop's menu, which reads a
 file: `install_icon()` writes this same mark there, once.
+
+The right-click menu is never handed to Qt (`setContextMenu`). Where the
+desktop hosts tray icons over D-Bus (Cinnamon's xapp-sn-watcher, KDE), Qt
+would export it and the desktop would redraw it in the system theme: no skin,
+no theme switch, no now-playing header. Without one, a right-click comes back
+as `Context` and the app pops up its own menu, skinned like the window.
 """
 
 import os
 import sys
 
 from PySide6.QtCore import QRectF, QSignalBlocker, Qt
-from PySide6.QtGui import QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (QActionGroup, QColor, QCursor, QIcon, QPainter,
+                           QPen, QPixmap)
 from PySide6.QtWidgets import (QHBoxLayout, QMenu, QSystemTrayIcon,
                                QVBoxLayout, QWidget, QWidgetAction)
 
@@ -82,9 +89,7 @@ class NowPlayingHeader(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(9)
-        # The menu is drawn dark by the desktop as often as not, so this tile
-        # does not follow the theme.
-        self.art = ArtView(26, 6, dark=True)
+        self.art = ArtView(26, 6)
         lay.addWidget(self.art)
         col = QVBoxLayout()
         col.setSpacing(2)
@@ -135,7 +140,10 @@ class Tray(QSystemTrayIcon):
 
         menu.addAction("Open ShortCutRadio", app.show_window)
         menu.addAction("Quit", app.quit)
-        self.setContextMenu(menu)
+        for m in (menu, theme_menu):
+            # Rounded corners need a see-through window behind them.
+            m.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+            m.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._menu = menu
         self.activated.connect(self._activated)
         self.set_theme_checked(app.config["theme"])
@@ -143,16 +151,25 @@ class Tray(QSystemTrayIcon):
     def _activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.app.toggle_window()
+        elif reason == QSystemTrayIcon.ActivationReason.Context:
+            self._menu.popup(QCursor.pos())
+
+    def apply_theme(self):
+        """The menu restyles from the app's stylesheet; the art tile is
+        painted by hand, so it is fitted again."""
+        self.header.art.apply_theme()
 
     def set_overlay_checked(self, on):
         with QSignalBlocker(self.overlay_action):
             self.overlay_action.setChecked(on)
 
     def set_theme_checked(self, name):
+        # No QSignalBlocker here: the exclusive group unchecks the others by
+        # listening to this action's `changed`, and a blocked one left two
+        # themes ticked. set_theme hangs on `triggered`, which this doesn't emit.
         act = self.theme_actions.get(name)
         if act:
-            with QSignalBlocker(act):
-                act.setChecked(True)
+            act.setChecked(True)
 
     def set_now_playing(self, s, art=None, tile=""):
         self.play_action.setText("Pause" if s.playing else "Play")

@@ -41,7 +41,7 @@ class App:
         install_icon()          # so the desktop's menu shows it too
         self.config = Config()
         cfg = self.config
-        self.window = None
+        self.window = self.tray = None
         self.apply_theme()
 
         self.artwork = Artwork()
@@ -142,6 +142,8 @@ class App:
         self.qapp.setStyleSheet(theme.stylesheet())
         if self.window:
             self.window.apply_theme()
+        if self.tray:
+            self.tray.apply_theme()
 
     def set_theme(self, name):
         self.config["theme"] = normalize_theme(name)

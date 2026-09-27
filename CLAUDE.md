@@ -205,6 +205,17 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   QTabBar.** Two tabs put something of their own at the right end of that same
   strip (the list hint on Sources, `Reset to default` on Overlay), which a
   styled QTabBar cannot hold.
+- **The tray menu is ours, not the desktop's.** Cinnamon hosts tray icons
+  over D-Bus (xapp-sn-watcher, a StatusNotifier host), and then
+  `setContextMenu` does not show the QMenu: Qt exports it as dbusmenu and the
+  desktop rebuilds it as a GTK menu in the system theme. The stylesheet never
+  reached it, a theme switch did nothing, and the now-playing header (a
+  widget) cannot travel over dbusmenu at all -- that was the menu the author
+  saw. So no menu is given to Qt (the item reports `/NO_DBUSMENU`), the host
+  calls `ContextMenu` on a right-click, Qt emits `activated(Context)`, and
+  `Tray` pops its own QMenu at the cursor: skinned, themed, header included.
+  KDE and the XEmbed tray deliver `Context` the same way. Its window is
+  frameless and translucent, or the rounded corners sit on a square.
 - **The overlay card stays dark in both themes.** It renders over games, not
   over the desktop, and takes its colors from the overlay settings only.
 - **Theme is `auto` | `dark` | `light`**, stored at the top level of the config
@@ -396,10 +407,7 @@ check), media keys on Windows (SMTC) and macOS (Now Playing) -- same seam as
 then they fall back to the listener, which is fine there as no "Unavailable"
 shows -- Windows/macOS key suppression (pynput
 `win32_event_filter` / `darwin_intercept`), and confirming the overlay over
-fullscreen NFSU2. The tray menu's skin is unconfirmed on this desktop: if
-Cinnamon serves the tray over StatusNotifier/DBus the menu is drawn by the
-desktop and the stylesheet is ignored (the actions still work) -- the art in
-its header is drawn by ShortCutRadio either way, but has not been seen.
+fullscreen NFSU2.
 
 ## Git
 

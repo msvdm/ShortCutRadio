@@ -103,7 +103,7 @@ class ArtView(QWidget):
         super().__init__()
         self.setFixedSize(size, size)
         self.radius = radius
-        self.dark = dark            # the tray header does not follow the theme
+        self.dark = dark            # True: stays dark whatever the theme is
         self._art = FittedArt(dark)
         self._name = ""
 
@@ -112,6 +112,10 @@ class ArtView(QWidget):
         if fitted or name != self._name:
             self._name = name
             self.update()
+
+    def apply_theme(self):
+        self._art.refit(self.width(), self.devicePixelRatioF(), force=True)
+        self.update()
 
     def paintEvent(self, _event):
         p = QPainter(self)

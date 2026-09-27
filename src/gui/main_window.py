@@ -220,6 +220,7 @@ class MainWindow(FramelessWindow):
     def apply_theme(self):
         """After a theme change: the hand-painted parts need a repaint."""
         self.look.refresh_colors()
+        self.hero.art.apply_theme()
         for w in self.findChildren(QWidget):
             w.update()
         self.update()
