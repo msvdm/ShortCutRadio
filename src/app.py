@@ -118,8 +118,8 @@ class App:
 
     def _learn_site(self, s):
         """Most Icecast/SHOUTcast mounts announce their home page. That is
-        where the logo lives, and a station seeded from the NFSU2 list has no
-        other way of telling us."""
+        where the logo lives, and a station added as a bare stream URL has
+        no other way of telling us."""
         src = self.player.current_source()
         if not src or src.get("kind") != "stream" or src.get("site"):
             return

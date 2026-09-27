@@ -10,7 +10,6 @@ import json
 import os
 import sys
 
-from .sources import make_stream
 
 APP_NAME = "ShortCutRadio"
 
@@ -52,11 +51,6 @@ DEFAULTS = {
         "text_color": "#c7d0d8",
     },
 }
-
-# The NFSU2 radio this app grew out of. Its live stations seed the source list
-# on first run so the switch costs nothing.
-NFSU2_STATIONS = os.path.expanduser("~/Games/NFSU2/radio/stations.conf")
-
 
 def app_dir():
     if getattr(sys, "frozen", False):
@@ -107,23 +101,6 @@ def normalize_theme(value):
     return value if value in THEMES else "auto"
 
 
-def read_stations_conf(path):
-    """Stream sources from an NFSU2-style `Name | URL` file."""
-    out = []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "|" not in line:
-                    continue
-                name, url = (p.strip() for p in line.split("|", 1))
-                if name and url:
-                    out.append(make_stream(name, url))
-    except OSError:
-        pass
-    return out
-
-
 def _usable(source):
     """A hand-edited or half-written entry must not crash the list later."""
     return (isinstance(source, dict) and source.get("kind") in ("stream", "folder")
@@ -136,9 +113,7 @@ class Config:
         self.path = path or os.path.join(data_dir(), "config.json")
         self.data = copy.deepcopy(DEFAULTS)
         self.first_run = not os.path.exists(self.path)
-        if self.first_run:
-            self.data["sources"] = read_stations_conf(NFSU2_STATIONS)
-        else:
+        if not self.first_run:
             try:
                 with open(self.path, encoding="utf-8") as fh:
                     self.data = _merge(DEFAULTS, json.load(fh))

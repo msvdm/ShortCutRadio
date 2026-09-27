@@ -174,7 +174,7 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
 - **A station's page is found before its logo is.** In order: the page the
   streams were harvested from at Add Stream time (`source["site"]`), the
   `icy-url` the stream announces while playing (learned and saved, which is
-  what rescues the NFSU2-seeded stations), the Icecast mount's `server_url`,
+  what rescues stations added as a bare stream URL), the Icecast mount's `server_url`,
   and last the stream host with its `streams.`/`ice6.` label trimmed. That
   last guess must prove itself: the page has to mention a distinctive word
   from the source's name, or `lb-hls.cdn.bg` hands back the CDN's logo. Wrong
