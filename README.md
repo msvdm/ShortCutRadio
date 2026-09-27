@@ -63,10 +63,15 @@ python3 -m venv .venv
   folder instead of your home folder. Then the whole folder can move to
   another machine.
 
-**Build it yourself:** `packaging/build.sh` makes two files in `dist/`. One is
-a `.deb` you install with a double-click, which adds ShortCutRadio to your menu.
-The other is a portable folder (`.tar.gz`) that keeps its settings inside
-itself. Both use the system's mpv library (`libmpv2`).
+**Build it yourself:** `packaging/build.sh` makes two files in `dist/`:
+
+- **`shortcutradio_*_amd64.deb`**, the one most people want. Double-click it to
+  install, and ShortCutRadio appears in your menu. Remove it the same way as any
+  other program.
+- **`ShortCutRadio-*-linux-x64.tar.gz`**, a portable folder. Unpack it anywhere
+  and run `shortcutradio` inside. It keeps its settings in the folder, so it can
+  live on a USB stick. It needs the system's mpv library (`libmpv2`), which
+  Linux Mint already has.
 
 ## Status
 

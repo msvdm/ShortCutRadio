@@ -225,9 +225,12 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   and bundles libmpv with all of ffmpeg (385 MB instead of 173); the spec
   drops libmpv and every library only it needed (an `ldd` difference, so
   what Qt or Python also load stays). python-mpv then finds the system's, and
-  the .deb depends on `libmpv2`. Two downloads, one job each: the `.deb`
-  installs (menu, icon, settings in `~/.config`), the tarball is portable
-  (it ships with `shortcutradio.portable`, settings in `data/` beside the app).
+  the .deb depends on `libmpv2`. Two downloads, one job each, and the
+  author chose the order: the `.deb` is **the** download (menu, icon, clean
+  removal, settings in `~/.config`); the tarball is the second option,
+  portable (it ships with `shortcutradio.portable`, settings in `data/` beside
+  the app). Single-file was measured and rejected: it unpacks 170 MB on
+  every start (0.9 s here against 0.1 s), and the .deb hides the folder.
   `--version` answers before Qt is imported; the build checks it.
 
 ## Traps — measured, do not re-litigate
