@@ -33,7 +33,7 @@ portable (one folder) → cross-platform (Windows, macOS).
 ## Architecture
 
 ```
-shortcutradio.py               entry; single instance via QLocalServer ("show" message)
+shortcutradio.py          entry; single instance via QLocalServer ("show" message)
 src/app.py                wires everything; quit = save, stop, os._exit
 src/core/config.py        JSON config; portable mode if shortcutradio.portable sits next to the app
 src/core/sources.py       source = {name, kind: stream|folder, target, shuffle}; names from URLs
@@ -60,7 +60,7 @@ src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
 requirements.txt          pip dependencies (libmpv comes from the system)
-shortcutradio.spec             PyInstaller: one folder, dist/ShortCutRadio/, libmpv left out
+shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/, libmpv left out
 packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop
 ```
 

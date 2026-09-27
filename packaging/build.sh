@@ -4,10 +4,10 @@
 #     packaging/build.sh
 #
 # Makes, in dist/:
-#   ShortCutRadio/                              the built app (a folder)
-#   ShortCutRadio-<ver>-linux-x64.tar.gz        that folder, portable: settings
+#   ShortCutRadio/                         the built app (a folder)
+#   ShortCutRadio-<ver>-linux-x64.tar.gz   that folder, portable: settings
 #                                          live in data/ beside the app
-#   shortcutradio_<ver>_amd64.deb               the same app, installed to the
+#   shortcutradio_<ver>_amd64.deb          the same app, installed to the
 #                                          system and the applications menu
 #
 # Both need the system's libmpv2 (see shortcutradio.spec for why it is not
