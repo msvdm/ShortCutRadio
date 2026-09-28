@@ -72,11 +72,17 @@ packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, 
 ```
 
 Stack: Python 3.12, PySide6 (Qt Multimedia and its FFmpeg are the player), pynput,
-python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.venv/`. It matches the author's AnyDMX project layout.
+python-xlib, jeepney (pure Python, for the media-key claim only).
 On Windows (Python 3.13 here): no pynput, python-xlib or jeepney; pywinrt's
-`winrt-*` packages for SMTC. No venv on Windows: the author keeps
-one global Python (per-user 3.13 on PATH) for every project, so the
-requirements are installed into it and `python` is that interpreter.
+`winrt-*` packages for SMTC.
+**No venv, on any machine.** The author keeps one Python per machine for
+every project, and the requirements are installed into it. Here that is
+the system `python3`: Mint marks it externally managed (PEP 668), so
+`~/.config/pip/pip.conf` sets `user = true` and `break-system-packages =
+true` and packages land in `~/.local` (never `sudo pip`); installed without
+`--upgrade`, pip keeps the apt copies Mint's own tools use (python-xlib,
+six, packaging). On Windows it is the per-user 3.13 on PATH, as `python`.
+The README still tells other people to make a venv: that is their machine.
 
 ## Decisions — do not re-litigate
 
@@ -93,7 +99,8 @@ requirements are installed into it and `python` is that interpreter.
   Measured against mpv on the same mounts (Windows, volume 0), time to
   sound: MP3 0.92 s against 0.81, AAC 0.88 / 0.81, Opus 0.36 / 0.38, HLS
   0.48 / 0.44; a station change about 0.9 s, a stop under 0.1 s, the GUI
-  thread never blocked for more than about 0.1 s. What Qt doesn't do is
+  thread never blocked for more than about 0.1 s. On Mint (PipeWire, through
+  its PulseAudio server): MP3 1.06 s, AAC 0.92, Opus 0.38, HLS 0.36. What Qt doesn't do is
   ours: song titles (the relay, next) and a folder's playlist (below).
   Volume is cubic, as mpv's was (`volume_gain`), so the 5 % steps sound even.
 - **Stream titles come from our own relay** (`core/relay.py`). Qt's metadata
@@ -271,8 +278,15 @@ requirements are installed into it and `python` is that interpreter.
   unpacks ~100 MB each time), and the LGPL libraries stay replaceable files.
   It carries Qt Multimedia and PySide6's FFmpeg, so the .deb no longer
   depends on `libmpv2` (and the spec no longer has to cut out the 212 MB
-  libmpv tree PyInstaller used to drag in). Not yet rebuilt on Mint since
-  the switch. Two downloads, one job each, and the
+  libmpv tree PyInstaller used to drag in). That makes it bigger, not
+  smaller: 199 MB against 173 (the .deb 60 MB against 51, the tarball 77
+  against 66), because the Linux build never carried libmpv -- the system
+  did. The difference is FFmpeg (20 MB), Qt Multimedia, and the PulseAudio
+  client with libsndfile and its codecs, which PyInstaller copies from the
+  build machine; the .deb still names `libpulse0`, the library the player
+  needs. Qt Quick stays: on Linux the FFmpeg plugin links it, so the
+  Windows spec's Quick filter must not be copied here. Two downloads, one
+  job each, and the
   author chose the order: the `.deb` is **the** download (menu, icon, clean
   removal, settings in `~/.config`); the tarball is the second option,
   portable (it ships with `shortcutradio.portable`, settings in `data/` beside
@@ -349,6 +363,14 @@ requirements are installed into it and `python` is that interpreter.
 - **Never call pynput `Listener.stop()` on quit.** Its XRECORD stop blocked
   forever and left a "quit" ShortCutRadio running, still holding the keys. Quit
   saves, releases the grabs, then `os._exit`.
+- **pynput 1.8 calls back with `(key, injected)`** when the callback can take
+  two arguments, and `_safe`'s wrapper takes any number. `_press(key)` then
+  raised on every key and no shortcut fired from source (a build bundling an
+  older pynput was fine); `_press`/`_release` take `injected` and ignore it.
+- **A build without an X display loses pynput's backend.** Its PyInstaller
+  hook finds the backend by importing pynput, which needs a display: built
+  over SSH, the app had no `pynput.keyboard._xorg` and dead keys. The spec
+  names the backend modules (`PYNPUT_XORG`); the hook's warning stays.
 - **Wrap pynput callbacks** (`Hotkeys._safe`): an uncaught exception silently
   stops the whole listener.
 - **Auto-repeat re-fires the action, and a repeat carries no release.**
@@ -475,9 +497,9 @@ requirements are installed into it and `python` is that interpreter.
 
 ## Testing
 
-- `.venv/bin/python -m pytest -q tests`
+- `python3 -m pytest -q tests` (with `DISPLAY` set, or the pynput tests skip)
 - Run against a scratch config so the real one (`~/.config/ShortCutRadio/`) is
-  untouched: `XDG_CONFIG_HOME=/tmp/x .venv/bin/python shortcutradio.py`.
+  untouched: `XDG_CONFIG_HOME=/tmp/x python3 shortcutradio.py`.
   `SHORTCUTRADIO_DEBUG_KEYS=1` logs every observed combo.
 - Use `python -m src.core.scraper URL` to check a station page. Reference
   results: badrockradio.net → 4 channels, binar.bg → 12 BNR HLS stations,
@@ -507,7 +529,7 @@ requirements are installed into it and `python` is that interpreter.
   org.mpris.MediaPlayer2.Player PlaybackStatus`. A tiny QDBusVirtualObject
   registered as `org.mpris.MediaPlayer2.<x>` *before* ShortCutRadio starts stands in
   for the browser that got there first.
-- Stopping a test instance: match `^.venv/bin/python shortcutradio`. A bare
+- Stopping a test instance: match `^python3 shortcutradio`. A bare
   `pkill -f "python shortcutradio.py"` also kills the shell that ran it.
 - **Build:** `packaging/build.sh` (runs the tests first). To prove a build
   plays, start `dist/ShortCutRadio/shortcutradio --hidden` on a scratch config with
@@ -569,9 +591,7 @@ requirements are installed into it and `python` is that interpreter.
 
 A GitHub Actions release (build on the oldest supported Ubuntu, so the
 glibc floor drops below this machine's 2.39, and on a Windows runner with
-build.ps1), the Linux side of the switch to Qt Multimedia (the spike on
-Mint, running from source without `libmpv2`, `build.sh`, and whether the
-.deb needs a sound library in `Depends`), signing the Windows installer, game hooks
+build.ps1), signing the Windows installer, game hooks
 (e.g. NFSU2 world-load autostart, in the style of the old radio's
 `/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
 and key suppression (pynput `darwin_intercept`), and confirming the overlay

@@ -105,10 +105,11 @@ def _hotkeys(media=False, **bindings):
 
 
 def _tap(hk, *keys):
+    """As pynput 1.8 calls back: (key, injected)."""
     for k in keys:
-        hk._press(k)
+        hk._press(k, False)
     for k in reversed(keys):
-        hk._release(k)
+        hk._release(k, False)
 
 
 @pynput_only

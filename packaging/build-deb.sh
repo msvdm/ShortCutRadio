@@ -31,7 +31,7 @@ install -Dm644 "$ROOT/packaging/THIRD_PARTY.txt" \
 # The icon is drawn in code (gui/tray.py), so it is drawn here too, at every
 # size the app itself installs for a source run.
 cd "$ROOT"
-QT_QPA_PLATFORM=offscreen .venv/bin/python - "$STAGE" <<'EOF'
+QT_QPA_PLATFORM=offscreen python3 - "$STAGE" <<'EOF'
 import os, sys
 from PySide6.QtWidgets import QApplication
 app = QApplication([])

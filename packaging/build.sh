@@ -15,7 +15,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-PY=.venv/bin/python
+PY=python3             # the machine's one Python, no venv
 VERSION=$($PY -c "from src import __version__; print(__version__)")
 echo "== ShortCutRadio $VERSION"
 

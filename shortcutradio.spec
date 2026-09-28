@@ -29,12 +29,18 @@ excludes = [
     "tkinter", "unittest", "pydoc", "pytest", "numpy", "PIL",
 ]
 
+# pynput picks its backend at import time, and its PyInstaller hook finds
+# the backend by importing pynput -- which fails without an X display (a
+# build over SSH), leaving the keys dead in the built app. Name it outright.
+PYNPUT_XORG = ["pynput.keyboard._xorg", "pynput.mouse._xorg",
+               "pynput._util.xorg", "pynput._util.xorg_keysyms"]
+
 a = Analysis(
     ["shortcutradio.py"],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=PYNPUT_XORG,
     hookspath=[],
     runtime_hooks=[],
     excludes=excludes,

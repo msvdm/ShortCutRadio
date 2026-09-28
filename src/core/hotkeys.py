@@ -273,7 +273,9 @@ class Hotkeys(QObject):
         get it."""
         return self._handle(name, mods, repeat, time.monotonic())
 
-    def _press(self, key):
+    # pynput 1.8 calls back with (key, injected) when the callback can take
+    # two arguments -- and _safe's wrapper takes any number.
+    def _press(self, key, injected=False):
         canonical = self._listener.canonical if self._listener else None
         name = key_name(key, canonical)
         if name is None:
@@ -319,7 +321,7 @@ class Hotkeys(QObject):
         self._fire(action, repeat, now)
         return True
 
-    def _release(self, key):
+    def _release(self, key, injected=False):
         name = key_name(key)
         if name in MOD_ORDER:
             self._mods.discard(name)
