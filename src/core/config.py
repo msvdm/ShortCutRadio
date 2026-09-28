@@ -30,6 +30,9 @@ DEFAULTS = {
     "volume": 70,
     "theme": "auto",           # "auto" follows the desktop; else "dark" / "light"
     "shortcuts": DEFAULT_SHORTCUTS,
+    # True: shortcuts are live only while the overlay is on. False: always,
+    # but only those with Ctrl/Alt/Super (hotkeys.works_everywhere).
+    "shortcuts_need_overlay": True,
     # Key name -> X keysym, learned from the keys actually pressed. Only keys
     # outside Latin-1 need it; see hotkeys.Hotkeys._learn_keysym.
     "keysyms": {},

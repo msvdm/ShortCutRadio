@@ -122,6 +122,19 @@ The README still tells other people to make a venv: that is their machine.
   wrong. The one exception is the overlay toggle itself (`hotkeys.ALWAYS_LIVE`):
   it must include Ctrl/Alt/Super, and it is always live and always grabbed,
   because nothing else could turn the overlay back on.
+- **That rule is a switch, on by default** (`shortcuts_need_overlay`, the
+  Shortcuts tab's "Shortcuts only while the overlay is on"). The author
+  added it so ShortCutRadio can be driven like any app. Off
+  (`Hotkeys.everywhere`), every shortcut is live and taken all the time,
+  overlay or not -- but only one with Ctrl/Alt/Super, or a bare media key
+  (`hotkeys.works_everywhere`); the author chose that over allowing single
+  keys, which would take a character from everything typed. A single-key
+  binding is not cleared: it is idle (`Hotkeys.idle`, a ⚠ on its row) and
+  works again when the switch goes back on, and recording one while off is
+  refused. The rule lives in `Hotkeys._is_live` alone, so the grabs, the
+  Windows hook and `press_media` follow it. The key caps have a pinned
+  height: ⚠ is drawn from the taller emoji font, and the rows jumped on
+  every flip of the switch.
 - **Observe + grab, not grab alone.** The pynput listener (XRECORD) fires the
   actions. keygrab.py only swallows keys. XRECORD still sees grabbed keys, so
   each action fires once, and it also sees keys inside fullscreen Wine games,
@@ -140,7 +153,8 @@ The README still tells other people to make a venv: that is their machine.
   there first kept the Play key with our overlay on; and the MPRIS player
   (`mpris.py`) for the sound applet and for desktops without the claim (KDE).
   The author chose the overlay rule for these too: ShortCutRadio is a player and
-  holds the claim only while the overlay is on **and** a media key is bound
+  holds the claim only while the shortcuts are live (the overlay is on, or
+  the switch above is off) **and** a media key is bound
   (`App._sync_media`); otherwise it is off the bus and the keys go wherever
   they would without ShortCutRadio. Ctrl+Next and the like stay ordinary grabbed
   shortcuts (the desktop binds the bare key only). Volume/mute keys stay the
@@ -321,8 +335,8 @@ The README still tells other people to make a venv: that is their machine.
   station, track and logo in the volume flyout and on the lock screen, and
   its buttons press the bound media keys through `press_media`. Same seam
   as `Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`),
-  same rule: a session only while the overlay is on and a media key is
-  bound; switched off, it is gone from the flyout. `App.media` holds
+  same rule: a session only while the shortcuts are live and a media key
+  is bound; otherwise it is gone from the flyout. `App.media` holds
   whichever one the platform has.
 - **The Windows build is 99 MB** (the installer 30 MB, the zip 41 MB; it
   was 194 MB with libmpv-2.dll). It carries Qt Multimedia's FFmpeg backend

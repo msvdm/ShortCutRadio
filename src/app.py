@@ -57,6 +57,7 @@ class App:
             via_desktop = self.media.available
         self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"],
                                media_via_desktop=via_desktop)
+        self.hotkeys.everywhere = not cfg["shortcuts_need_overlay"]
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
         self.window = MainWindow(self)
         self.tray = Tray(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
@@ -177,11 +178,13 @@ class App:
         self._save_timer.start()
 
     def _sync_media(self):
-        """Be the desktop's media player only while the overlay is on and a
-        media key is bound; otherwise those keys belong to other players."""
+        """Be the desktop's media player only while the shortcuts are live (the
+        overlay is on, or they work everywhere) and a media key is bound;
+        otherwise those keys belong to other players."""
         keys = self.hotkeys.media_keys()
+        live = self.config["overlay"]["visible"] or self.hotkeys.everywhere
         self.media.set_keys(keys)
-        self.media.set_active(self.config["overlay"]["visible"] and bool(keys))
+        self.media.set_active(live and bool(keys))
 
     def update_overlay(self, **changes):
         """Change any of the card's settings in one go: reload, then save."""
@@ -195,6 +198,13 @@ class App:
         self._sync_media()
         self.overlay.hint_key = pretty(self.config["shortcuts"]["play_pause"])
         self.refresh_state()
+        self.save()
+
+    def set_shortcuts_need_overlay(self, on):
+        self.config["shortcuts_need_overlay"] = bool(on)
+        self.hotkeys.everywhere = not on
+        self._sync_media()
+        self.window.shortcuts.refresh()
         self.save()
 
     def _sources_edited(self):

@@ -15,7 +15,7 @@ from src.core.config import (Config, normalize_theme, opacity_from_percent,
 from src.core.coverart import cover_file, embedded_art
 from src.core import hotkeys
 from src.core.hotkeys import (Hotkeys, has_modifier, is_media, make_combo,
-                              parse_combo, pretty)
+                              parse_combo, pretty, works_everywhere)
 from src.core.keygrab import keysym_for
 from src.core.keygrab_win import LLKHF_UP, KeyHook, vk_name
 from src.core.net import parse_icecast
@@ -158,6 +158,32 @@ def test_only_the_overlay_key_works_with_the_overlay_off():
     assert fired == ["overlay", "play_pause"]
 
 
+def test_only_a_combo_that_types_nothing_works_everywhere():
+    assert works_everywhere("ctrl+e") and works_everywhere("alt+shift+k")
+    assert works_everywhere("media_play_pause")
+    assert not works_everywhere("'") and not works_everywhere("shift+e")
+
+
+@pynput_only
+def test_everywhere_needs_no_overlay_but_a_modifier():
+    hk, fired = _hotkeys(overlay="ctrl+alt+r", play_pause="ctrl+e", source_next="'")
+    grabbed = []
+
+    def set_combos(combos):
+        grabbed[:] = [c[0] for c in combos]
+    hk.grabber.set_combos = set_combos
+    hk.everywhere = True                       # the overlay stays off
+    assert sorted(grabbed) == ["ctrl+alt+r", "ctrl+e"]
+    assert hk.idle("'") and not hk.idle("ctrl+e") and not hk.idle("ctrl+alt+r")
+    _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
+    _tap(hk, keyboard.KeyCode(char="'", vk=39))
+    assert fired == ["play_pause"]
+    hk.everywhere = False                       # back to the overlay rule
+    assert grabbed == ["ctrl+alt+r"] and not hk.idle("'")
+    _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
+    assert fired == ["play_pause"]
+
+
 @pynput_only
 def test_a_key_outside_latin1_is_grabbed_by_its_keysym():
     assert keysym_for("e") == ord("e")          # Latin-1: the code point is it
@@ -291,6 +317,18 @@ def test_windows_hook_takes_live_keys_only(monkeypatch):
     assert key("]") and key("]", up=True)           # overlay on: ] is ours
     assert not key("e") and not key("e", up=True)   # an unbound key never is
     assert fired == ["overlay", "vol_up"]
+
+
+def test_windows_hook_everywhere_takes_combos_only(monkeypatch):
+    hk, key, fired, _, clock = _hooked(monkeypatch, play_pause="ctrl+e", vol_up="]",
+                                       source_next="media_play_pause")
+    hk.everywhere = True                        # the overlay stays off
+    key("ctrl")
+    assert key("e") and key("e", up=True)       # Ctrl+E is ours, overlay or not
+    key("ctrl", up=True)
+    assert not key("]") and not key("]", up=True)   # a single key still types
+    assert key("media_play_pause")              # a media key types nothing
+    assert fired == ["play_pause", "source_next"]
 
 
 def test_windows_hook_knows_a_repeat_from_the_release(monkeypatch):

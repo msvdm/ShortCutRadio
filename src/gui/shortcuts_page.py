@@ -4,8 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
                                QPushButton, QWidget)
 
-from ..core.hotkeys import has_modifier, pretty
-from .widgets import mono_font, repolish
+from ..core.hotkeys import SUPER, has_modifier, pretty, works_everywhere
+from .widgets import PillSwitch, mono_font, repolish
 
 SHORTCUT_ROWS = [
     ("overlay", "Overlay on / off"),
@@ -26,10 +26,19 @@ UNGRABBED_TIP = ("This key cannot be taken: either another program already holds
 MEDIA_TIP = ("A media key: your desktop hands it to ShortCutRadio as its media player,\n"
              "while the overlay is on. With the overlay off it goes to other players.\n"
              "Click to record a different key.")
-HELP_TEXT = ("The keyboard shortcuts work only while the overlay is active - all of them "
-             "except the one that turns the overlay on, which always works. If you want "
-             "to free the keys up for other purposes - such as typing - disable the "
-             "overlay; the music will not stop.")
+SWITCH_TEXT = "Shortcuts only while the overlay is on"
+IDLE_TIP = ("Shortcuts work everywhere now, and a single key would take that\n"
+            "character from everything you type. Record it with Ctrl, Alt or\n"
+            f"{SUPER}, or switch \"{SWITCH_TEXT}\" back on.")
+# The two texts under the switch. Kept about the same length: a label that
+# changes height on a click moves everything below it.
+HELP_ON = ("All of them except the one that turns the overlay on, which always works. "
+           "Hide the overlay and every key goes back to your other apps, so typing is "
+           "safe; the music will not stop.")
+HELP_OFF = ("Off: shortcuts work all the time, in every app, and the app in front does "
+            f"not get them. Each needs Ctrl, Alt or {SUPER}: a single key shows ⚠ and "
+            "waits until this is on again.")
+SWITCH_W = 34 + 12      # the pill and its gap to the text
 # Every word-wrapped label needs a pinned wrapping width. Qt asks such a label
 # how tall it would be at its *minimum* width, and an unpinned one answers with
 # a dozen lines -- which the window then grows to fit and never gives back.
@@ -71,6 +80,10 @@ class ShortcutRow(QFrame):
         text.setObjectName("shortcutLabel")
         self.key = KeyCap()
         self.key.setToolTip(CAPTURE_TIP)
+        # ⚠ comes from the emoji font, which is taller: without a pinned
+        # height every row would jump when the switch below is flipped.
+        self.key.ensurePolished()
+        self.key.setFixedHeight(self.key.sizeHint().height())
         lay.addWidget(text)
         lay.addStretch(1)
         lay.addWidget(self.key)
@@ -83,12 +96,14 @@ class ShortcutRow(QFrame):
         if on:
             self.key.setText("press a key…")
 
-    def show_combo(self, combo, leaks, media=False):
+    def show_combo(self, combo, leaks, media=False, idle=False):
         """`leaks`: the key could not be taken, so the focused app gets it too.
-        `media`: the desktop delivers it (see core/mpris.py)."""
+        `media`: the desktop delivers it (see core/mpris.py).
+        `idle`: a single key, off while shortcuts work everywhere."""
         self.set_capturing(False)
-        self.key.setText(pretty(combo) + (" ⚠" if leaks else ""))
-        self.key.setToolTip(UNGRABBED_TIP if leaks else MEDIA_TIP if media else CAPTURE_TIP)
+        self.key.setText(pretty(combo) + (" ⚠" if leaks or idle else ""))
+        self.key.setToolTip(IDLE_TIP if idle else UNGRABBED_TIP if leaks
+                            else MEDIA_TIP if media else CAPTURE_TIP)
         self.key.setDown(False)
 
 
@@ -121,20 +136,38 @@ class ShortcutsPage(QWidget):
             warn.setMinimumWidth(WRAP_W)
             grid.addWidget(warn, nrows, 0, 1, 2)
             nrows += 1
-        help_label = QLabel(HELP_TEXT)
-        help_label.setObjectName("helpText")
-        help_label.setWordWrap(True)
-        help_label.setFixedWidth(WRAP_W)
-        grid.addWidget(help_label, nrows, 0, 1, 2)
+        # The overlay rule, as a switch: the pill, its title, and what it means.
+        rule = QGridLayout()
+        rule.setHorizontalSpacing(SWITCH_W - PillSwitch.W)
+        rule.setVerticalSpacing(4)
+        self.rule_switch = PillSwitch()
+        self.rule_switch.toggled.connect(app.set_shortcuts_need_overlay)
+        title = QLabel(SWITCH_TEXT)
+        title.setObjectName("toggleLabel")
+        self.help_label = QLabel()
+        self.help_label.setObjectName("helpText")
+        self.help_label.setWordWrap(True)
+        self.help_label.setFixedWidth(WRAP_W - SWITCH_W)
+        rule.addWidget(self.rule_switch, 0, 0)
+        rule.addWidget(title, 0, 1)
+        rule.addWidget(self.help_label, 1, 1)
+        rule.setColumnStretch(2, 1)
+        grid.addLayout(rule, nrows, 0, 1, 2)
         grid.setRowStretch(nrows + 1, 1)
         self.refresh()
 
     def refresh(self):
+        need = self.app.config["shortcuts_need_overlay"]
+        self.rule_switch.blockSignals(True)
+        self.rule_switch.setChecked(need)
+        self.rule_switch.blockSignals(False)
+        self.help_label.setText(HELP_ON if need else HELP_OFF)
         sc = self.app.config["shortcuts"]
+        hk = self.app.hotkeys
         for row in self.rows:
             combo = sc.get(row.action, "")
             row.show_combo(combo, bool(combo) and combo in self._ungrabbed,
-                           self.app.hotkeys.via_desktop(combo))
+                           hk.via_desktop(combo), bool(combo) and hk.idle(combo))
 
     def on_ungrabbed(self, combos):
         """The grabber's report: which live shortcuts the focused app still
@@ -165,6 +198,11 @@ class ShortcutsPage(QWidget):
                 self, "ShortCutRadio",
                 "The overlay shortcut needs Ctrl, Alt or Super (e.g. Ctrl+Alt+R): "
                 "it works everywhere, so a single key would fire while you type.")
+        elif self.app.hotkeys.everywhere and not works_everywhere(combo):
+            QMessageBox.information(
+                self, "ShortCutRadio",
+                f"Shortcuts work everywhere now, so each needs Ctrl, Alt or {SUPER} "
+                "(e.g. Ctrl+E): a single key would fire while you type.")
         else:
             for other, c in sc.items():       # one key, one job
                 if c == combo and other != row.action:

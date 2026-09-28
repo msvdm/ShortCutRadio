@@ -20,7 +20,8 @@ turn the volume up from the keyboard. Press the key again and it's gone.
   your clicks through, so it never gets in the way.
 - **Shortcuts that don't steal your keys.** They only work while the overlay
   is showing. Hide it and every key goes back to your other apps, as if
-  ShortCutRadio weren't there.
+  ShortCutRadio weren't there. Or switch that off, and shortcuts like
+  Ctrl+E work all the time, overlay or not.
 - **Internet radio made easy.** Paste a station's website and ShortCutRadio finds
   its streams for you. If a stream drops, it reconnects on its own.
 - **Your own music folders**, played in order or shuffled, with their cover art.
@@ -36,8 +37,17 @@ turn the volume up from the keyboard. Press the key again and it's gone.
 2. **Shortcuts** tab: pick your keys. The defaults are small and out of the
    way: `[` `]` for volume, `;` `'` for the previous or next station,
    `\` to play or pause.
+
+   <img src="docs/shortcuts.png" alt="The Shortcuts tab: a key for each action, and the switch that ties them to the overlay" width="640">
+
 3. Press **Ctrl+Alt+R** to show the overlay. Now your shortcuts work.
+   Want them to work all the time, like any other app's? Turn off
+   **Shortcuts only while the overlay is on** at the bottom of the Shortcuts
+   tab. Then every shortcut needs Ctrl, Alt or Win/Super (Ctrl+E,
+   Alt+Shift+K and so on), so a single key never gets in the way of typing.
 4. **Overlay** tab: choose the corner, size, font and colours of the card.
+
+   <img src="docs/overlay-tab.png" alt="The Overlay tab: width, corner, margins, font, sizes, colours and transparency of the card" width="640">
 
 Closing the window keeps ShortCutRadio running in the tray. Click the tray icon to
 bring the window back.
@@ -92,8 +102,8 @@ so Windows may warn that it comes from an unknown publisher: choose
 **More info**, then **Run anyway**.
 
 On Windows the keyboard's media keys are ordinary shortcuts: bind Play/Pause
-to one and, while the overlay is on, it controls ShortCutRadio and nothing
-else. ShortCutRadio also shows up in the volume menu and on the lock screen.
+to one and, while your shortcuts work (overlay on, or always), it controls
+ShortCutRadio and nothing else. ShortCutRadio also shows up in the volume menu and on the lock screen.
 
 ## Status
 

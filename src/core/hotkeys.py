@@ -12,6 +12,12 @@ overlay back on. Live combos are also grabbed (keygrab.py) so the focused app
 doesn't receive them: overlay on, the key is ShortCutRadio's; overlay off, the key
 is free -- including combos like Ctrl+E, which the app in front may want.
 
+That rule is a switch, on by default. Off (`everywhere`), every shortcut is
+live and taken all the time, overlay or not -- but only one with Ctrl, Alt or
+Super, or a bare media key (`works_everywhere`): a single key would take a
+character from everything the user types. A single-key binding is kept and
+simply idle until the switch goes back on.
+
 On Linux the keyboard's media keys are the exception to all of this: the
 desktop owns them, so a bare media key is not observed or grabbed here but
 delivered by the desktop's player channel (mpris.py) through `press_media` --
@@ -91,6 +97,11 @@ def has_modifier(combo):
     return bool(mods - {"shift"})
 
 
+def works_everywhere(combo):
+    """May this combo be live all the time? Not if it types something."""
+    return has_modifier(combo) or is_media(combo)
+
+
 def pretty(combo):
     """For display: "ctrl+alt+r" -> "Ctrl+Alt+R", "page_down" -> "Page Down"."""
     if not combo:
@@ -137,6 +148,7 @@ class Hotkeys(QObject):
         # (see keygrab.keysym_for). Learned from every press, kept in the config.
         self.keysyms = {} if keysyms is None else keysyms
         self._live = False
+        self._everywhere = False
         if WINDOWS:
             self.grabber = KeyHook(self._safe(self._key, False))
             self.error = ""
@@ -159,7 +171,8 @@ class Hotkeys(QObject):
 
     @property
     def live(self):
-        """True while the overlay is on: every shortcut works, and is taken."""
+        """True while the overlay is on: every shortcut works, and is taken
+        (unless `everywhere` has the say, see `_is_live`)."""
         return self._live
 
     @live.setter
@@ -167,9 +180,31 @@ class Hotkeys(QObject):
         self._live = bool(on)
         self._update_grabs()
 
-    def _is_live(self, action):
-        """The one rule: the overlay toggle always works, the rest only while live."""
-        return action == ALWAYS_LIVE or self._live
+    @property
+    def everywhere(self):
+        """The Shortcuts tab's switch, off: live without the overlay."""
+        return self._everywhere
+
+    @everywhere.setter
+    def everywhere(self, on):
+        self._everywhere = bool(on)
+        self._update_grabs()
+
+    def _is_live(self, action, combo):
+        """The one rule: the overlay toggle always works; the rest while the
+        overlay is on, or always if the switch says so and the combo can't type."""
+        if action == ALWAYS_LIVE:
+            return True
+        if self._everywhere:
+            return works_everywhere(combo)
+        return self._live
+
+    def idle(self, combo):
+        """Bound, but kept from working by the switch: a single key while
+        shortcuts work everywhere."""
+        action = self.bindings.get(combo)
+        return (self._everywhere and action not in (None, ALWAYS_LIVE)
+                and not works_everywhere(combo))
 
     def via_desktop(self, combo):
         """This combo reaches us from the desktop's media channel, not the
@@ -195,7 +230,7 @@ class Hotkeys(QObject):
         if DEBUG:
             print(f"[hotkeys] desktop {name!r} live={self._live} "
                   f"repeat={self._repeating.get(name, False)} -> {action}", flush=True)
-        if action is None or not self._is_live(action) or self.capturing:
+        if action is None or not self._is_live(action, name) or self.capturing:
             return
         now = time.monotonic()
         if now - self._capture_end < CAPTURE_ECHO_S:
@@ -217,7 +252,7 @@ class Hotkeys(QObject):
     def _update_grabs(self):
         live = []
         for combo, action in self.bindings.items():
-            if not self._is_live(action) or self.via_desktop(combo):
+            if not self._is_live(action, combo) or self.via_desktop(combo):
                 continue
             mods, key = parse_combo(combo)
             live.append((combo, mods, key, self.keysyms.get(key)))
@@ -316,7 +351,7 @@ class Hotkeys(QObject):
             self._repeating[name] = repeat
             return False
         action = self.bindings.get(combo)
-        if action is None or not self._is_live(action):
+        if action is None or not self._is_live(action, combo):
             return False
         self._fire(action, repeat, now)
         return True
