@@ -16,7 +16,7 @@ import html
 import re
 import urllib.parse
 
-from .net import NET_ERRORS, icecast_sources, open_url
+from .net import NET_ERRORS, clean_site, icecast_sources, open_url
 from .scraper import classify
 
 TIMEOUT_BYTES = 4 * 1024 * 1024
@@ -36,22 +36,6 @@ COMMON = {"radio", "stream", "live", "online", "music", "listen", "player", "htt
 LABEL = re.compile(r"^(stream|streams|streaming|ice|icecast|shoutcast|cast|live|"
                    r"listen|hls|audio|media|cdn|srv|server|sc|s|node|lb|lb-hls)"
                    r"[\d-]*$", re.I)
-
-
-def clean_site(url):
-    """A usable http(s) home page, or "" -- stations put junk in icy-url."""
-    url = (url or "").strip()
-    if not url:
-        return ""
-    if "://" not in url:
-        url = "https://" + url
-    try:
-        p = urllib.parse.urlsplit(url)
-    except ValueError:
-        return ""
-    if p.scheme not in ("http", "https") or not p.hostname or "." not in p.hostname:
-        return ""
-    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path or "/", "", ""))
 
 
 def site_for_stream(stream_url):
@@ -260,14 +244,15 @@ def station_logo(stream_url, site="", icy_url="", label=""):
     guess = site_for_stream(stream_url)
     tokens = name_tokens(label)
     tried = []
-    for candidate in (clean_site(site), clean_site(icy_url),
-                      icecast_site(stream_url), guess):
+    # The station's word is taken as given, even when it matches the guess.
+    for candidate, guessed in ((clean_site(site), False), (clean_site(icy_url), False),
+                               (icecast_site(stream_url), False), (guess, True)):
         if not candidate or candidate in tried:
             continue
-        if candidate == guess and not tokens:
+        if guessed and not tokens:
             continue        # nothing to check a guess against: don't risk it
         tried.append(candidate)
-        got = logo_from_page(candidate, need=tokens if candidate == guess else ())
+        got = logo_from_page(candidate, need=tokens if guessed else ())
         if got:
             return got + (candidate,)
     return None

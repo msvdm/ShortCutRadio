@@ -19,12 +19,13 @@ from src.core.hotkeys import (Hotkeys, all_bindings, has_modifier, is_media, mak
                               works_everywhere)
 from src.core.keygrab import keysym_for
 from src.core.keygrab_win import LLKHF_UP, KeyHook, vk_name
-from src.core.net import parse_icecast
+from src.core.net import parse_icecast, same_site, site_of
 from src.core.player import (EMPTY_STATE, PlayerState, make_state, now_playing,
                              volume_gain)
 from src.core.relay import IcyStripper, OggReader, comment_title, stream_title
 from src.core.mpris import key_for, metadata, playback_status, player_props
-from src.core.scraper import clean_name, harvest, looks_streamy, parse_playlist
+from src.core.scraper import (Found, clean_name, harvest, looks_streamy, origin_site,
+                              parse_playlist, strip_referrer)
 from src.core.sources import art_label, folder_tracks, name_from_url
 # QImage needs no QApplication, so the art maths can be tested like the rest.
 from src.gui.art import content_box, monogram
@@ -530,6 +531,46 @@ def test_site_for_stream_drops_the_streaming_label():
         "https://radio.rn-tv.com/"
     assert site_for_stream("https://binar.bg/live") == "https://binar.bg/"
     assert site_for_stream("not a url") == ""
+
+
+def test_site_of_finds_the_registered_name():
+    assert site_of("https://ice6.somafm.com/fluid-128-mp3") == "somafm.com"
+    assert site_of("https://www.bbc.co.uk/sounds") == "bbc.co.uk"
+    assert same_site("https://somafm.com/fluid/", "http://somafm.com")
+    assert not same_site("https://www.predavatel.com/bg/live/", "https://www.radio1.bg/")
+    assert not same_site("", "")
+
+
+DIRECTORY = "https://www.predavatel.com/bg/live/"
+STW = "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO_1AAC_H.aac"
+
+
+def test_a_directory_is_a_shortcut_not_the_station():
+    # The stream names its own site: that beats the page it was found on.
+    found = Found("RADIO_1", STW, site="https://www.radio1.bg/")
+    assert origin_site(DIRECTORY, found, False) == "https://www.radio1.bg/"
+    # It says nothing, and the page lists many stations: no page at all.
+    hls = Found("Burgas", "https://lb-hls.cdn.bg/2032/fls/Burgas.stream/playlist.m3u8")
+    assert origin_site(DIRECTORY, hls, False) == ""
+
+
+def test_a_station_page_stays_the_station():
+    # Same site as what the stream announces: the page is more specific.
+    fluid = Found("SomaFM: Fluid", "https://ice6.somafm.com/fluid-128-aac",
+                  site="http://somafm.com/")
+    assert origin_site("https://somafm.com/fluid/", fluid, True) == "https://somafm.com/fluid/"
+    # Silent stream on the page's own site, or the page's only station.
+    own = Found("BadRock", "https://streams.badrockradio.net/national")
+    assert origin_site("https://badrockradio.net/", own, False) == "https://badrockradio.net/"
+    cdn = Found("Darik", "https://a12.asurahosting.com/listen/darik_radio/radio.mp3")
+    assert origin_site("https://darik.bg/", cdn, True) == "https://darik.bg/"
+
+
+def test_strip_referrer_drops_only_the_middle_mans_tag():
+    assert strip_referrer(STW + "?dist=PREDAVATEL", DIRECTORY) == STW
+    assert strip_referrer(STW + "?dist=PREDAVATEL&x=1", DIRECTORY) == STW + "?x=1"
+    assert strip_referrer(STW + "?dist=radio1_web", DIRECTORY) == STW + "?dist=radio1_web"
+    assert strip_referrer(STW, DIRECTORY) == STW
 
 
 LOGO_PAGE = """

@@ -265,6 +265,18 @@ The README still tells other people to make a venv: that is their machine.
   art is worse than none, which is why the check exists and why it matches
   Unicode -- the first version was ASCII-only and let a CDN logo through for
   "БНР Бургас".
+- **A page that links a stream is not the station.** The author's rule:
+  respect the original and give it the traffic, not the middle-man. A
+  directory (predavatel.com's live list) gave every station its own logo
+  and tagged the links `?dist=PREDAVATEL`. So Add Stream records a page as a
+  stream's `site` only when it is provably the station's
+  (`scraper.origin_site`): the stream's own word (icy-url, Icecast
+  `server_url`) wins, and the page is kept only on that same site, being
+  the more specific (somafm.com/fluid/ over somafm.com). A stream that says
+  nothing keeps the page only when it lives on the page's site or the page
+  offers just that one station; otherwise no site, and the tile until the
+  author sets one. Query tags naming the linking site are dropped
+  (`strip_referrer`). A general rule, never a list of sites.
 - **The level meters are decorative.** Random targets with a fast attack and a
   slow decay (`core/levels.py`), ~14 fps, and they run only while something is
   audible and the bars are on screen -- the overlay's repaint lands on top of
@@ -411,6 +423,11 @@ The README still tells other people to make a venv: that is their machine.
   stations, played directly too (Qt 6.11.2). The relay rewraps it as plain
   FLAC: "fLaC", the STREAMINFO marked as the last block, then the frames; a
   later chain's (the next song's) headers are skipped. Then it plays.
+- **The relay must not say it is a browser.** StreamTheWorld (every
+  `…AAC_H.aac` station) sends a browser User-Agent 32,768 bytes and hangs
+  up: two seconds of sound, then the 5 s retry, forever. `net.UA` poses as
+  Chrome for the station *pages*; the relay sends `ShortCutRadio/<version>`
+  (`relay.UA`). mpv never hit it: it said "mpv".
 - **Most Ogg/Opus mounts send no title**: their comment says only
   `ENCODER=`. mpv showed nothing for them either. Radio Paradise's first
   FLAC chain has an empty comment; its title comes with the next song.

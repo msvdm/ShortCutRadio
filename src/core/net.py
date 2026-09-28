@@ -22,6 +22,43 @@ def open_url(url, extra=None):
     return urllib.request.urlopen(req, timeout=TIMEOUT)
 
 
+def clean_site(url):
+    """A usable http(s) home page, or "" -- stations put junk in icy-url."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if "://" not in url:
+        url = "https://" + url
+    try:
+        p = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    if p.scheme not in ("http", "https") or not p.hostname or "." not in p.hostname:
+        return ""
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path or "/", "", ""))
+
+
+# Second-level labels under which the registered name is one label further in:
+# example.co.uk, example.com.au.
+SLD = {"co", "com", "net", "org", "gov", "edu", "ac", "or", "ne"}
+
+
+def site_of(url):
+    """The registered site an address belongs to: ice6.somafm.com -> somafm.com."""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+    labels = host.split(".")
+    n = 3 if len(labels) > 2 and labels[-2] in SLD else 2
+    return ".".join(labels[-n:]) if len(labels) >= 2 else ""
+
+
+def same_site(a, b):
+    s = site_of(a)
+    return bool(s) and s == site_of(b)
+
+
 def read_json(url, limit, extra=None):
     """The parsed JSON at `url`, read up to `limit` bytes. Raises NET_ERRORS."""
     with open_url(url, extra) as resp:

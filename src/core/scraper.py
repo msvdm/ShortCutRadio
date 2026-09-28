@@ -7,6 +7,10 @@ audio survive. Icecast servers are asked for their other mounts too, which is
 how one channel link on a page turns into the whole network. If a page yields
 nothing, radio-browser.info is searched by the page title.
 
+A page that links a stream is often only a shortcut to it (a directory, a
+list), so each stream gets the station's own page, not the one it was found
+on, and loses the tags that credit the linking site (`origin_site`).
+
 Stdlib only, blocking: the GUI runs `discover()` on a worker thread.
 """
 
@@ -18,7 +22,8 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from .net import NET_ERRORS, TIMEOUT, icecast_sources, open_url, read_json
+from .net import (NET_ERRORS, TIMEOUT, clean_site, icecast_sources, open_url,
+                  read_json, same_site, site_of)
 from .sources import name_from_url
 
 PAGE_MAX = 3 * 1024 * 1024
@@ -46,7 +51,7 @@ class Found:
     name: str
     url: str
     detail: str = ""
-    site: str = ""          # the page it came from: where its logo lives
+    site: str = ""          # the station's own page: where its logo lives
 
 
 # ------------------------------------------------------------------ helpers
@@ -191,7 +196,8 @@ def classify(url, want_page=False):
             name = headers.get("icy-name", "").strip()
             if not name or name.lower() in ("no name", "unspecified description"):
                 name = name_from_url(url)
-            return ("audio", Found(name, url, _detail(ct, headers)), server)
+            return ("audio", Found(name, url, _detail(ct, headers),
+                                   clean_site(headers.get("icy-url"))), server)
 
         if want_page and (ct.startswith("text/") or "javascript" in ct or "json" in ct or not ct):
             body = head + _read_rest(resp, PAGE_MAX).encode("utf-8", "surrogateescape")
@@ -244,7 +250,7 @@ def icecast_mounts(stream_url):
         br = s.get("bitrate") or s.get("audio_bitrate")
         ct = (s.get("server_type") or "").lower()
         detail = _detail(ct, {"icy-br": str(br) if br else ""})
-        out.append(Found(name, url, detail, (s.get("server_url") or "").strip()))
+        out.append(Found(name, url, detail, clean_site(s.get("server_url"))))
     return out
 
 
@@ -300,9 +306,13 @@ def discover(url, report=lambda m: None):
         with ThreadPoolExecutor(max_workers=12) as pool:
             for got in pool.map(resolve, candidates):
                 for found, server in got:
-                    found.site = final          # where its logo will come from
                     results.append(found)
                     servers[_key(found.url)] = server
+        one_station = len({f.name for f in results}) == 1
+        for f in results:
+            f.site = origin_site(final, f, one_station)
+            if not same_site(final, f.site or f.url):
+                f.url = strip_referrer(f.url, final)
 
     # One channel of an Icecast server usually means there are more.
     hosts = []
@@ -320,6 +330,38 @@ def discover(url, report=lambda m: None):
     if not results and page_title:
         results = _dedupe(radio_browser(page_title, report))
     return results
+
+
+def origin_site(page, found, one_station):
+    """The station's own page for a stream found on `page`, or "".
+
+    A page that links to a stream is often only a shortcut to it -- a
+    directory, a list, a blog post -- and its logo is not the station's. The
+    stream's own word (icy-url, an Icecast server_url) is the original; the
+    page is kept only where it is on that same site, being the more specific
+    of the two (somafm.com/fluid/, not somafm.com). A stream that says nothing
+    keeps the page only when the page is provably its: the stream lives on
+    the page's site, or the page offers just this one station.
+    """
+    if found.site:
+        return page if same_site(page, found.site) else found.site
+    if same_site(page, found.url) or one_station:
+        return page
+    return ""
+
+
+def strip_referrer(url, page):
+    """The stream without the tags that credit the page that linked it:
+    ?dist=PREDAVATEL, utm_source=... -- the listening belongs to the station."""
+    name = site_of(page).split(".")[0]
+    p = urllib.parse.urlsplit(url)
+    if len(name) < 4 or not p.query:
+        return url
+    pairs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+    kept = [(k, v) for k, v in pairs if name not in (k + "=" + v).lower()]
+    if len(kept) == len(pairs):
+        return url
+    return urllib.parse.urlunsplit(p._replace(query=urllib.parse.urlencode(kept)))
 
 
 def _page_candidates(text, final):
