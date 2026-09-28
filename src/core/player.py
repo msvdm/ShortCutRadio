@@ -8,11 +8,22 @@ receivers never touch mpv state concurrently.
 """
 
 import os
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QTimer, Signal
+
+from .config import app_dir
+
+if sys.platform == "win32":
+    # Windows has no system libmpv, so the app brings libmpv-2.dll: a build
+    # keeps it with its other libraries (sys._MEIPASS, the _internal folder),
+    # a dev checkout next to shortcutradio.py. python-mpv's find_library()
+    # only walks %PATH%, so that folder goes first on it before mpv loads.
+    os.environ["PATH"] = (getattr(sys, "_MEIPASS", app_dir()) + os.pathsep
+                          + os.environ.get("PATH", ""))
 
 import mpv
 

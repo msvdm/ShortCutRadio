@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import random
 import time
 
@@ -11,9 +12,11 @@ from src.core.artfetch import (image_size, logo_candidates, mentions, name_token
 from src.core.config import (Config, normalize_theme, opacity_from_percent,
                               transparency_percent)
 from src.core.coverart import cover_file, embedded_art
+from src.core import hotkeys
 from src.core.hotkeys import (Hotkeys, has_modifier, is_media, make_combo,
                               parse_combo, pretty)
 from src.core.keygrab import keysym_for
+from src.core.keygrab_win import LLKHF_UP, KeyHook, vk_name
 from src.core.net import parse_icecast
 from src.core.player import EMPTY_STATE, PlayerState, make_state, now_playing
 from src.core.mpris import key_for, metadata, playback_status, player_props
@@ -66,7 +69,8 @@ def test_folder_tracks(tmp_path):
     (tmp_path / "b").mkdir()
     for f in ("a.mp3", "b/c.FLAC", "cover.jpg", "notes.txt", "d.ogg"):
         (tmp_path / f).write_bytes(b"")
-    tracks = [p.replace(str(tmp_path) + "/", "") for p in folder_tracks(str(tmp_path))]
+    tracks = [os.path.relpath(p, tmp_path).replace(os.sep, "/")
+              for p in folder_tracks(str(tmp_path))]
     assert tracks == ["a.mp3", "d.ogg", "b/c.FLAC"]
     shuffled = folder_tracks(str(tmp_path), shuffle=True, rng=random.Random(1))
     assert sorted(shuffled) == sorted(folder_tracks(str(tmp_path)))
@@ -81,9 +85,12 @@ def test_combos():
 
 
 # The listener itself needs a keyboard; its bookkeeping does not, so the keys
-# are handed to Hotkeys directly, exactly as pynput would deliver them.
-keyboard = pytest.importorskip("pynput.keyboard")
-CTRL, ALT = keyboard.Key.ctrl_l, keyboard.Key.alt_l
+# are handed to Hotkeys directly, exactly as pynput would deliver them. Only
+# where pynput is the listener: Windows has its own hook (tested further down).
+keyboard = hotkeys.keyboard
+pynput_only = pytest.mark.skipif(keyboard is None, reason="pynput is not the listener here")
+if keyboard is not None:
+    CTRL, ALT = keyboard.Key.ctrl_l, keyboard.Key.alt_l
 
 
 def _hotkeys(media=False, **bindings):
@@ -101,6 +108,7 @@ def _tap(hk, *keys):
         hk._release(k)
 
 
+@pynput_only
 def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
@@ -123,6 +131,7 @@ def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
     assert fired == ["play_pause", "play_pause"]
 
 
+@pynput_only
 def test_volume_still_rides_the_repeat():
     hk, fired = _hotkeys(vol_up="]")
     hk.live = True
@@ -132,6 +141,7 @@ def test_volume_still_rides_the_repeat():
     assert fired == ["vol_up"] * 3
 
 
+@pynput_only
 def test_only_the_overlay_key_works_with_the_overlay_off():
     hk, fired = _hotkeys(overlay="ctrl+alt+r", play_pause="ctrl+e", source_next="e")
     _tap(hk, CTRL, keyboard.KeyCode(char="e", vk=101))
@@ -144,6 +154,7 @@ def test_only_the_overlay_key_works_with_the_overlay_off():
     assert fired == ["overlay", "play_pause"]
 
 
+@pynput_only
 def test_a_key_outside_latin1_is_grabbed_by_its_keysym():
     assert keysym_for("e") == ord("e")          # Latin-1: the code point is it
     assert keysym_for("\u0435") == 1077        # Cyrillic e: not a keysym at all
@@ -160,6 +171,7 @@ def test_a_bare_media_key_is_the_desktops():
     assert not is_media("e")
 
 
+@pynput_only
 def test_media_keys_come_from_the_desktop_not_the_listener(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
@@ -182,6 +194,7 @@ def test_media_keys_come_from_the_desktop_not_the_listener(monkeypatch):
     assert fired == ["play_pause"]
 
 
+@pynput_only
 def test_capturing_a_media_key_does_not_also_press_it(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
@@ -200,6 +213,7 @@ def test_capturing_a_media_key_does_not_also_press_it(monkeypatch):
     assert fired == ["play_pause"]
 
 
+@pynput_only
 def test_holding_a_media_key_toggles_once(monkeypatch):
     # The desktop repeats a held key as a stream of calls with no release;
     # the listener, which hears the key too, is what marks them as repeats.
@@ -224,12 +238,97 @@ def test_holding_a_media_key_toggles_once(monkeypatch):
     assert fired == ["play_pause", "play_pause"]
 
 
+@pynput_only
 def test_without_the_desktop_media_keys_are_plain_shortcuts():
     hk, fired = _hotkeys(play_pause="media_play_pause")
     hk.live = True
-    assert hk.media_keys() == set()
+    assert not hk.via_desktop("media_play_pause")
     _tap(hk, keyboard.Key.media_play_pause)
     assert fired == ["play_pause"]
+
+
+# The Windows hook: the same Hotkeys, fed raw key events the way the hook
+# procedure hands them over. The system calls (layout, held modifiers, the
+# mask key) are stood in for, so this runs on every platform.
+VK = {"ctrl": 0xA2, "alt": 0xA4, "e": 0x45, "r": 0x52, "]": 0xDD, "[": 0xDB,
+      "esc": 0x1B, "media_play_pause": 0xB3}
+CHARS = {0x45: "E", 0x52: "R", 0xDD: "]", 0xDB: "["}
+
+
+def _hooked(monkeypatch, **bindings):
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    hk = Hotkeys(bindings)
+    fired, masks, held = [], [], set()
+    hk.triggered.connect(fired.append)
+    hook = KeyHook(lambda *a: hk._handle(*a, time.monotonic()))
+    hook._name = lambda vk, scan, flags: vk_name(vk, CHARS.get(vk, ""))
+    hook._mods = lambda: set(held)
+    hook._mask = lambda: masks.append(1)
+
+    def key(name, up=False):
+        """One event; True when the hook keeps it from the focused app."""
+        if name in ("ctrl", "alt"):
+            (held.discard if up else held.add)(name)
+        return hook.event(VK[name], 0, LLKHF_UP if up else 0)
+    return hk, key, fired, masks, clock
+
+
+def test_windows_hook_takes_live_keys_only(monkeypatch):
+    hk, key, fired, masks, _ = _hooked(monkeypatch, overlay="ctrl+alt+r", vol_up="]")
+    assert not key("]") and not key("]", up=True)   # overlay off: Notepad gets ]
+    assert fired == []
+    key("ctrl"), key("alt")
+    assert key("r") and key("r", up=True)           # the toggle is always ours ...
+    assert not key("alt", up=True) and not key("ctrl", up=True)
+    assert fired == ["overlay"]
+    assert masks == [1]     # ... and Alt's lone release must not open a menu bar
+    hk.live = True
+    assert key("]") and key("]", up=True)           # overlay on: ] is ours
+    assert not key("e") and not key("e", up=True)   # an unbound key never is
+    assert fired == ["overlay", "vol_up"]
+
+
+def test_windows_hook_knows_a_repeat_from_the_release(monkeypatch):
+    hk, key, fired, _, clock = _hooked(monkeypatch, play_pause="ctrl+e", vol_up="]")
+    hk.live = True
+    key("ctrl")
+    assert key("e")
+    clock[0] += 0.5
+    for _ in range(20):         # held: presses with no release in between
+        assert key("e")         # every repeat is still kept from the app
+        clock[0] += 0.03
+    key("e", up=True)
+    assert fired == ["play_pause"]
+    clock[0] += 0.3
+    key("e")                    # a new press after the release is not a repeat
+    assert fired == ["play_pause"] * 2
+    key("e", up=True), key("ctrl", up=True)
+    key("]")
+    for _ in range(10):         # volume rides the repeat, at its own pace
+        clock[0] += 0.1
+        key("]")
+    assert fired.count("vol_up") == 11
+
+
+def test_windows_hook_capture_takes_the_key(monkeypatch):
+    hk, key, fired, _, _ = _hooked(monkeypatch, play_pause="media_play_pause")
+    captured = []
+    hk.captured.connect(captured.append)
+    hk.begin_capture()
+    assert key("esc")           # Esc cancels the capture, not the window
+    assert captured == ["esc"] and fired == []
+    hk.live = True
+    assert key("media_play_pause")      # a media key is an ordinary key here
+    assert fired == ["play_pause"]
+
+
+def test_windows_key_names_follow_pynput():
+    assert vk_name(0xB3) == "media_play_pause" and vk_name(0xB2) == "media_stop"
+    assert vk_name(0x78) == "f9" and vk_name(0x22) == "page_down"
+    assert vk_name(0x45, "E") == "e" and vk_name(0xDE, "'") == "'"
+    assert vk_name(0x67, "7") == "7"
+    assert vk_name(0xE8) == "vk232"
 
 
 def test_mpris_speaks_for_the_player_state():

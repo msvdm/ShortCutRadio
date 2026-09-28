@@ -1,6 +1,15 @@
 PySide6>=6.5
 python-mpv>=1.0
-pynput>=1.7
+pynput>=1.7; sys_platform != "win32"
 python-xlib>=0.33; sys_platform == "linux"
 jeepney>=0.8; sys_platform == "linux"
+# Windows' Now Playing (SMTC); Media.Control and Collections read it back in tests
+winrt-runtime>=3.2; sys_platform == "win32"
+winrt-Windows.Foundation>=3.2; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=3.2; sys_platform == "win32"
+winrt-Windows.Media>=3.2; sys_platform == "win32"
+winrt-Windows.Media.Control>=3.2; sys_platform == "win32"
+winrt-Windows.Media.Playback>=3.2; sys_platform == "win32"
+winrt-Windows.Storage>=3.2; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.2; sys_platform == "win32"
 pytest>=7.0

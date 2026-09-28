@@ -1,0 +1,21 @@
+ShortCutRadio is MIT-licensed (see LICENSE). A built copy of ShortCutRadio for
+Windows also contains the software below, each under its own licence. It is
+kept as separate files, so any of it can be replaced with another build.
+
+  mpv (libmpv-2.dll)  GPL-2.0-or-later, as built here
+                                  https://mpv.io/  https://github.com/mpv-player/mpv
+      A build from https://github.com/shinchiro/mpv-winbuild-cmake, which
+      links FFmpeg and other libraries into the one DLL. The version it
+      reports is in the file's properties (Details tab), and its source is
+      the mpv, FFmpeg and library sources that build script names.
+  Qt 6 and PySide6    LGPL-3.0    https://www.qt.io/  https://code.qt.io/
+  python-mpv          LGPL-2.1+ (or GPL-2.0+, at your choice)
+                                  https://github.com/jaseg/python-mpv
+  PyWinRT (winrt-*)   MIT         https://github.com/pywinrt/pywinrt
+  Python              PSF         https://www.python.org/
+  OpenSSL             Apache-2.0  https://www.openssl.org/
+  Microsoft Visual C++ runtime (vcruntime140*.dll, msvcp140.dll)
+                      redistributable under Microsoft's licence terms
+
+The texts of these licences are at https://www.gnu.org/licenses/ and on
+each project's page.

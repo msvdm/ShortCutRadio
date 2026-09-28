@@ -44,7 +44,11 @@ bring the window back.
 
 ## Run it
 
-ShortCutRadio runs on **Linux with X11** today (Linux Mint, Ubuntu and similar).
+ShortCutRadio runs on **Linux with X11** (Linux Mint, Ubuntu and similar) and
+on **Windows 10 and 11**.
+
+### Linux
+
 You need Python 3.10 or newer and the mpv player library.
 
 ```bash
@@ -73,11 +77,31 @@ python3 -m venv .venv
   live on a USB stick. It needs the system's mpv library (`libmpv2`), which
   Linux Mint already has.
 
+### Windows
+
+Build it yourself on Windows: `packaging\build.ps1` makes two files in
+`dist\`:
+
+- **`ShortCutRadio-*-windows-x64-setup.exe`**, the installer. It puts
+  ShortCutRadio in the Start menu, needs no administrator rights, and
+  uninstalls from Settings > Apps. Your settings stay when you uninstall.
+- **`ShortCutRadio-*-windows-x64.zip`**, a portable folder. Unzip it anywhere
+  and run `shortcutradio.exe` inside. It keeps its settings in the folder.
+
+Both include everything they need, mpv too. The installer isn't signed yet,
+so Windows may warn that it comes from an unknown publisher: choose
+**More info**, then **Run anyway**.
+
+On Windows the keyboard's media keys are ordinary shortcuts: bind Play/Pause
+to one and, while the overlay is on, it controls ShortCutRadio and nothing
+else. ShortCutRadio also shows up in the volume menu and on the lock screen.
+
 ## Status
 
-It works well on Linux (X11) and I use it every day. Next on the list:
-ready-made downloads, then Windows and macOS. Wayland isn't supported,
-because the global shortcuts need X11.
+It works well on Linux (X11) and I use it every day. Windows is new: it
+works, but the overlay hasn't been tried over a fullscreen game there yet.
+macOS is next. Wayland isn't
+supported, because the global shortcuts need X11.
 
 ## Who wrote this
 
@@ -89,7 +113,8 @@ the bugs we hit along the way, are written down in [CLAUDE.md](CLAUDE.md).
 ## Problems and ideas
 
 Please open an [issue](https://github.com/msvdm/ShortCutRadio/issues). Say what you
-expected, what happened, and which Linux and desktop you use.
+expected, what happened, and which Linux and desktop, or which Windows, you
+use.
 
 ## License
 

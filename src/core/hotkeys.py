@@ -2,7 +2,9 @@
 
 pynput's X11 backend taps the XRECORD extension, the mechanism the NFSU2 radio
 proved: the key still reaches the focused app, and it fires through a
-fullscreen game's keyboard grab. Windows and macOS have their own backends.
+fullscreen game's keyboard grab. On Windows a low-level keyboard hook does
+the observing and the taking in one place (keygrab_win.py), so pynput is not
+used there at all.
 
 Every shortcut is live only while the overlay is on (`live`); the
 one exception is the overlay toggle itself, which has to work to turn the
@@ -10,9 +12,10 @@ overlay back on. Live combos are also grabbed (keygrab.py) so the focused app
 doesn't receive them: overlay on, the key is ShortCutRadio's; overlay off, the key
 is free -- including combos like Ctrl+E, which the app in front may want.
 
-The keyboard's media keys are the exception to all of this: the desktop owns
-them, so a bare media key is not observed or grabbed here but delivered by the
-desktop's player channel (mpris.py) through `press_media` -- see `via_desktop`.
+On Linux the keyboard's media keys are the exception to all of this: the
+desktop owns them, so a bare media key is not observed or grabbed here but
+delivered by the desktop's player channel (mpris.py) through `press_media` --
+see `via_desktop`. On Windows they are ordinary keys to the hook.
 
 Combo strings are "ctrl+alt+r", "'", "f9", "shift+page_down": modifiers in a
 fixed order, then the key. The same normaliser builds them for capture and for
@@ -20,20 +23,23 @@ matching, so whatever the settings UI recorded is exactly what will match.
 """
 
 import os
+import sys
 import time
 import traceback
 
 from PySide6.QtCore import QObject, Signal
 
 from .keygrab import KeyGrabber
+from .keygrab_win import KeyHook
 
-try:
-    from pynput import keyboard
-except Exception as e:          # no X display, unsupported platform ...
-    keyboard = None
-    IMPORT_ERROR = str(e)
-else:
-    IMPORT_ERROR = ""
+WINDOWS = sys.platform == "win32"
+keyboard = None
+IMPORT_ERROR = ""
+if not WINDOWS:
+    try:
+        from pynput import keyboard
+    except Exception as e:      # no X display, unsupported platform ...
+        IMPORT_ERROR = str(e)
 
 MOD_ORDER = ("ctrl", "alt", "shift", "super")
 MOD_NAMES = {
@@ -49,6 +55,7 @@ MEDIA_VKS = {0x1008FF15: "media_stop", 0xB2: "media_stop"}
 # the system's: those keys are never ShortCutRadio's.
 MEDIA_KEYS = {"media_play_pause", "media_next", "media_previous", "media_stop"}
 REPEATABLE = {"vol_up", "vol_down"}
+SUPER = "Win" if WINDOWS else "Super"
 ALWAYS_LIVE = "overlay"     # the only action that works with the overlay off
 DEBUG = os.environ.get("SHORTCUTRADIO_DEBUG_KEYS") == "1"
 DEBOUNCE_S = 0.25
@@ -89,7 +96,7 @@ def pretty(combo):
     if not combo:
         return "—"
     mods, key = parse_combo(combo)
-    names = [m.capitalize() for m in MOD_ORDER if m in mods]
+    names = [SUPER if m == "super" else m.capitalize() for m in MOD_ORDER if m in mods]
     if len(key) == 1:
         names.append(key.upper())
     else:
@@ -130,7 +137,12 @@ class Hotkeys(QObject):
         # (see keygrab.keysym_for). Learned from every press, kept in the config.
         self.keysyms = {} if keysyms is None else keysyms
         self._live = False
-        self.grabber = KeyGrabber(self.ungrabbed.emit)
+        if WINDOWS:
+            self.grabber = KeyHook(self._safe(self._key, False))
+            self.error = ""
+        else:
+            self.grabber = KeyGrabber(self.ungrabbed.emit)
+            self.error = IMPORT_ERROR
         self.set_bindings(bindings)
         self.capturing = False
         self._mods = set()
@@ -139,7 +151,6 @@ class Hotkeys(QObject):
         self._capture_end = 0.0
         self._repeating = {}    # media key -> its last press was a repeat
         self._listener = None
-        self.error = IMPORT_ERROR
 
     def set_bindings(self, bindings):
         """{action: combo} -> lookup {combo: action}."""
@@ -167,8 +178,10 @@ class Hotkeys(QObject):
         return self.media_via_desktop and is_media(combo)
 
     def media_keys(self):
-        """The media keys bound to something: what the desktop should send us."""
-        return {parse_combo(c)[1] for c in self.bindings if self.via_desktop(c)}
+        """The bare media keys bound to something: what the desktop's player
+        (MPRIS, SMTC) should offer. On Windows the hook takes the keys
+        themselves, so they need not come *from* the desktop to count."""
+        return {parse_combo(c)[1] for c in self.bindings if is_media(c)}
 
     def press_media(self, name):
         """A media key the desktop delivered. Same bindings, same overlay rule
@@ -211,6 +224,12 @@ class Hotkeys(QObject):
         self.grabber.set_combos(live)
 
     def start(self):
+        if WINDOWS:
+            if not self.grabber.start():
+                self.error = self.grabber.error or "no keyboard hook on this system"
+                print(f"[hotkeys] could not start: {self.error}", flush=True)
+                return False
+            return True
         if keyboard is None:
             print(f"[hotkeys] unavailable: {self.error}", flush=True)
             return False
@@ -235,17 +254,24 @@ class Hotkeys(QObject):
     def begin_capture(self):
         self.capturing = True
 
-    # pynput thread ----------------------------------------------------------
+    # listener thread ---------------------------------------------------------
     @staticmethod
-    def _safe(fn):
+    def _safe(fn, fallback=None):
         """pynput stops the whole listener on an uncaught callback error; one
         odd key must not cost every shortcut for the rest of the session."""
-        def wrapper(key):
+        def wrapper(*args):
             try:
-                fn(key)
+                return fn(*args)
             except Exception:
                 traceback.print_exc()
+                return fallback
         return wrapper
+
+    def _key(self, name, mods, repeat):
+        """A key press from the Windows hook, which already knows a repeat
+        from a fresh press. True: the key is ours, the focused app must not
+        get it."""
+        return self._handle(name, mods, repeat, time.monotonic())
 
     def _press(self, key):
         canonical = self._listener.canonical if self._listener else None
@@ -264,28 +290,34 @@ class Hotkeys(QObject):
         now = time.monotonic()
         repeat = now - self._down.get(name, 0) < REPEAT_GAP_S
         self._down[name] = now
-        combo = make_combo(self._mods, name)
+        self._handle(name, self._mods, repeat, now)
+
+    def _handle(self, name, mods, repeat, now):
+        """One key press, whichever listener heard it. Returns True when the
+        key is ours -- a live binding, or the key being recorded -- which the
+        Windows hook uses to take it; on X11 keygrab.py already has."""
+        combo = make_combo(mods, name)
         if DEBUG:
             print(f"[hotkeys] {combo!r} live={self._live} repeat={repeat} "
                   f"capturing={self.capturing} -> {self.bindings.get(combo)}", flush=True)
 
         if self.capturing:
-            if repeat:              # the tail of a held key is not a choice
-                return
-            self.capturing = False
-            self._capture_end = now
-            self.captured.emit(combo)
-            return
+            if not repeat:          # the tail of a held key is not a choice
+                self.capturing = False
+                self._capture_end = now
+                self.captured.emit(combo)
+            return True
 
         if self.via_desktop(combo):
             # The desktop delivers it (press_media): acting here too would
             # toggle twice. What only the listener knows is whether it repeats.
             self._repeating[name] = repeat
-            return
+            return False
         action = self.bindings.get(combo)
         if action is None or not self._is_live(action):
-            return
+            return False
         self._fire(action, repeat, now)
+        return True
 
     def _release(self, key):
         name = key_name(key)

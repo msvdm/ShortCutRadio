@@ -151,6 +151,32 @@ def player_props(state, keys, art_url=""):
     }
 
 
+class ArtFile:
+    """The now-playing picture as a file the desktop can read, saved once per
+    picture. Shared with smtc.py, whose thumbnail is read from a file too."""
+
+    def __init__(self, art_dir):
+        self._dir = art_dir
+        self._art = (None, "")      # (pixmap cacheKey, the file it was saved to)
+
+    def path(self, pm):
+        if pm is None or pm.isNull():
+            return ""
+        key = pm.cacheKey()
+        if key != self._art[0]:
+            path = os.path.join(self._dir, f"nowplaying-{key & 0xFFFFFFFF:08x}.png")
+            try:
+                os.makedirs(self._dir, exist_ok=True)
+                for old in glob.glob(os.path.join(self._dir, "nowplaying-*.png")):
+                    os.remove(old)
+                if not pm.save(path, "PNG"):
+                    path = ""
+            except OSError:
+                path = ""
+            self._art = (key, path)
+        return self._art[1]
+
+
 def _no_strings():
     arg = QDBusArgument()
     arg.beginArray(QMetaType(QMetaType.Type.QString))
@@ -177,8 +203,7 @@ class Mpris(QDBusVirtualObject):
 
     def __init__(self, art_dir):
         super().__init__()
-        self._art_dir = art_dir
-        self._art = (None, "")      # (pixmap cacheKey, the file it was saved to)
+        self._art = ArtFile(art_dir)
         self._state = None
         self._pixmap = None
         self._keys = frozenset()
@@ -253,23 +278,8 @@ class Mpris(QDBusVirtualObject):
             self._bus.send(msg)
 
     def _art_url(self):
-        """The picture as a file the applet can read, saved once per picture."""
-        pm = self._pixmap
-        if pm is None or pm.isNull():
-            return ""
-        key = pm.cacheKey()
-        if key != self._art[0]:
-            path = os.path.join(self._art_dir, f"nowplaying-{key & 0xFFFFFFFF:08x}.png")
-            try:
-                os.makedirs(self._art_dir, exist_ok=True)
-                for old in glob.glob(os.path.join(self._art_dir, "nowplaying-*.png")):
-                    os.remove(old)
-                if not pm.save(path, "PNG"):
-                    path = ""
-            except OSError:
-                path = ""
-            self._art = (key, path)
-        return QUrl.fromLocalFile(self._art[1]).toString() if self._art[1] else ""
+        path = self._art.path(self._pixmap)
+        return QUrl.fromLocalFile(path).toString() if path else ""
 
     # ------------------------------------------------------------------ bus side
     def introspect(self, path):

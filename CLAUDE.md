@@ -19,7 +19,8 @@ bypassed in that game's `play.sh` (`NFS_RADIO=1` still starts it). ShortCutRadio
 is meant to serve every game and non-game use, at home and at work.
 
 Goals, in order: works reliably on this Linux Mint (X11, Cinnamon) machine →
-portable (one folder) → cross-platform (Windows, macOS).
+portable (one folder) → cross-platform (Windows, macOS). Windows 10/11 is
+ported (keys, media, builds); macOS is not started.
 
 ## Core principles
 
@@ -43,10 +44,12 @@ src/core/scraper.py       Add Stream: URL/page/playlist -> list of verified stre
 src/core/artfetch.py      a station's page -> its logo (stdlib only; same style as scraper)
 src/core/coverart.py      a local track's cover: a file beside it, or ID3/FLAC/Ogg/MP4 art
 src/core/levels.py        the level meters' numbers (pure, so they can be tested)
-src/core/hotkeys.py       pynput listener (observes) + gating + capture mode
+src/core/hotkeys.py       gating + capture mode; the listener is pynput (X11) or keygrab_win
 src/core/keygrab.py       X11 passive grabs so live keys don't reach the focused app
+src/core/keygrab_win.py   Windows: one low-level keyboard hook that hears, fires and takes
 src/core/mpris.py         media keys: ShortCutRadio as an MPRIS player (QtDBus), sound applet
 src/core/mediakeys.py     media keys: the settings daemon's claim (jeepney)
+src/core/smtc.py          Windows' Now Playing (SMTC, pywinrt), behind mpris.py's seam
 src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
 src/gui/widgets.py        the hand-painted parts: pill switch, transport, meters, labels
 src/gui/art.py            the art box: trim, fit, backdrop, initials tile (FittedArt)
@@ -61,11 +64,17 @@ tests/test_core.py        pytest, pure functions only
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
 requirements.txt          pip dependencies (libmpv comes from the system)
 shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/, libmpv left out
-packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop
+shortcutradio-windows.spec  the same on Windows, libmpv-2.dll bundled
+packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop;
+                          build.ps1 (tests, build, zip, installer), shortcutradio.iss
+                          (Inno Setup), make_ico.py, THIRD_PARTY(-windows).txt
 ```
 
 Stack: Python 3.12, PySide6, python-mpv (needs system libmpv2), pynput,
 python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.venv/`. It matches the author's AnyDMX project layout.
+On Windows (Python 3.13 here): no pynput, python-xlib or jeepney; pywinrt's
+`winrt-*` packages for SMTC; libmpv-2.dll from shinchiro's mpv-winbuild-cmake
+in the checkout's root (gitignored). The venv is `.venv\`.
 
 ## Decisions — do not re-litigate
 
@@ -243,6 +252,60 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   the app). Single-file was measured and rejected: it unpacks 170 MB on
   every start (0.9 s here against 0.1 s), and the .deb hides the folder.
   `--version` answers before Qt is imported; the build checks it.
+- **Windows keys: one low-level hook, not pynput.** pynput's Windows
+  backend cannot observe and take a key separately: a key suppressed in its
+  `win32_event_filter` is hidden from its own listener too
+  (moses-palmer/pynput#679). A `WH_KEYBOARD_LL` hook (`keygrab_win.KeyHook`,
+  ctypes, its own thread and message loop) hears every key before any app
+  and asks `Hotkeys._handle` whether it is a live binding; if so the action
+  fires and the hook returns non-zero, and the key's *release* is taken as
+  well. So Windows has no observe/grab split and no pynput at all. The
+  overlay rule is unchanged, and capture takes the key it records (Esc or
+  Alt+F4 while recording must not act on the window). Key names follow
+  pynput's; a printable key is named by its scan code through the *default*
+  input language, so switching the window in front to Bulgarian does not
+  change what matches (the X11 group-1 rule). Held modifiers come from
+  `GetAsyncKeyState`, not from events seen, so a Win release lost to the
+  lock screen cannot leave Win held.
+- **A key taken while Alt or Win is held is followed by an unassigned key
+  (VK 0xE8, tagged in `dwExtraInfo`).** Measured: without it, a taken Alt+[
+  left the app in front a lone Alt release and its menu bar opened; with it,
+  it didn't. AutoHotkey does the same. Its tag keeps the hook off it.
+- **On Windows the media keys are ordinary shortcuts.** VK_MEDIA_PLAY_PAUSE
+  and the rest reach the hook like any key and are taken there -- measured:
+  nothing after us (another hook, the shell, SMTC) saw a taken Play key.
+  So `media_via_desktop` is False, nothing like `mediakeys.py` exists, and
+  `Hotkeys.media_keys()` means "bare media keys that are bound" on both
+  platforms. SMTC (`smtc.py`) is what MPRIS is for the sound applet: the
+  station, track and logo in the volume flyout and on the lock screen, and
+  its buttons press the bound media keys through `press_media`. Same seam
+  as `Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`),
+  same rule: a session only while the overlay is on and a media key is
+  bound; switched off, it is gone from the flyout. `App.media` holds
+  whichever one the platform has.
+- **The Windows build bundles libmpv-2.dll**, in `_internal\` (there is no
+  system copy to depend on; `player.py` puts that folder on %PATH% for
+  python-mpv's `find_library`). The spec drops what PySide6's hooks drag
+  in unused: the virtual-keyboard plugin (and with it Qt Quick, QML,
+  OpenGL), the PDF image plugin, the 20 MB software-OpenGL fallback and
+  Qt's translations -- 239 MB to 194 MB, 116 of it libmpv. A version
+  resource names the exe "ShortCutRadio" for Explorer, Task Manager and
+  the Now Playing flyout. **The DLL is GPL-2.0-or-later** (shinchiro's
+  build, no `-Dgpl=false`; its own version resource says so) -- whether to
+  ship that with the MIT app or find an LGPL build is the author's call,
+  still open.
+- **Windows downloads: the installer first, the zip second**, the same order
+  as .deb/tarball. Inno Setup, per user by default (no UAC prompt; the
+  first page offers all users), Start menu entry, optional desktop icon,
+  settings left in %APPDATA% on uninstall. Unsigned for now: SmartScreen
+  warns, and the README says how to get past it.
+- **Closing for an installer.** Setup's Restart Manager closes a running
+  copy on upgrade (Qt ends the loop on WM_ENDSESSION, so `main` saves after
+  `exec()` returns -- measured: a volume change still waiting on the save
+  timer survived). The uninstaller has no Restart Manager, so it runs
+  `shortcutradio.exe --quit`, which sends "quit" to the instance on the
+  same config over the single-instance socket and waits until it is gone.
+  Killing by image name would also stop a portable copy elsewhere.
 
 ## Traps — measured, do not re-litigate
 
@@ -344,6 +407,36 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   release on purpose; the next real press resets it, and the listener always
   sees that press before the desktop's call arrives (measured).
 - **Wayland is not supported** (pynput and X grabs are X11-only). Mint is X11 today.
+- **A low-level hook has no repeat flag.** Bit 30 ("previous key state")
+  is in WM_KEYDOWN's lParam, not in KBDLLHOOKSTRUCT. But every release does
+  reach the hook, so a press with no release since is a repeat -- exact,
+  unlike X11. The 1.5 s gap is only a net for a release lost to the secure
+  desktop (Win+L, Ctrl+Alt+Del). `GetAsyncKeyState` can't tell either: the
+  hook runs before it is updated, and a taken key never updates it.
+- **A new thread inherits the keyboard layout active at that moment.**
+  Measured here: the hook thread started in Bulgarian and named `]` as a
+  Cyrillic letter, so no shortcut on it matched. Names come from
+  `SPI_GETDEFAULTINPUTLANG` (the default input language) instead.
+- **ctypes truncates handles unless told otherwise.** `GetModuleHandleW`
+  with the default `int` restype hands a 64-bit module handle back cut to
+  32 bits, and `SetWindowsHookExW` then fails with no hook and no exception.
+  Every user32/kernel32 function the hook calls has its argtypes/restype
+  set, on a private `WinDLL`, so nothing else's settings leak in.
+- **SMTC needs its thumbnail from a StorageFile.** A `file:///` URI for the
+  thumbnail shows no picture (pywinrt 3.2, measured). The file arrives
+  asynchronously, and ButtonPressed and async completions run on WinRT's
+  thread pool: both come back to the Qt thread through queued signals.
+- **Inno only removes an install folder it created.** One left behind by a
+  failed uninstall (files in use, before `--quit`) makes the next install's
+  uninstaller leave the empty folder too. A clean cycle leaves nothing.
+- **A second global hook installed later sees keys first**, and one that
+  swallows a key means ours never hears it. Unlike X11's BadAccess there is
+  no way to find out, so the Shortcuts tab's ⚠ never shows on Windows.
+- **Not measured yet: the hook's time limit.** Windows skips a low-level
+  hook that doesn't answer within LowLevelHooksTimeout, and after enough
+  timeouts removes it silently. The callback waits for the GIL, so a GUI
+  thread holding it for long would cost the shortcuts. Nothing has come
+  close so far.
 
 ## Testing
 
@@ -396,18 +489,58 @@ python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.
   the package's. Both share `~/.config/ShortCutRadio`, so only one runs at a time.
   Cinnamon caches the menu, so a changed icon can take a re-login to show.
 
+### Windows
+
+- `.venv\Scripts\python -m pytest -q tests` -- the pynput tests skip; the
+  hook tests feed `KeyHook.event` raw events on any platform.
+- Scratch config: `$env:APPDATA = "<scratch dir>"` before starting (the
+  counterpart of `XDG_CONFIG_HOME=/tmp/x`). Stop a test instance with
+  `shortcutradio.py --quit` under the same `APPDATA`, or
+  `Get-Process shortcutradio | ? Path -eq <that exe> | Stop-Process` --
+  anchored to the path, never every shortcutradio.exe.
+- **Synthetic key tests:** `SendInput` from ctypes; the hook sees injected
+  keys like real ones (it doesn't look at LLKHF_INJECTED). Give each key its
+  scan code (`MapVirtualKeyW`), as hardware does. What the focused app
+  gets: a Tk window in the test process, focused and checked with
+  `GetForegroundWindow` before every key. What *other programs* get: a
+  second WH_KEYBOARD_LL hook installed **before** starting ShortCutRadio --
+  the newest hook runs first, so the older one sees only what we pass on.
+  Auto-repeat is a run of presses with no release between them, 30 ms apart.
+  The Alt menu check: the target in its own process (its menu loop blocks),
+  then `GetGUIThreadInfo` for GUI_INMENUMODE, with a lone Alt tap as the
+  control that proves the check can see a menu at all. Switch the target
+  window's language with `ActivateKeyboardLayout` to test the layout rule.
+  A test script's own ctypes needs the same care as the hook's: a missing
+  `restype` once kept the test's hook from installing, and it hung waiting.
+- **Media and SMTC:** `SendInput` of VK_MEDIA_PLAY_PAUSE (0xB3) only while
+  the overlay is on -- otherwise it reaches whatever else is playing. Read
+  the session the way the flyout does, with `winrt-Windows.Media.Control`:
+  `GlobalSystemMediaTransportControlsSessionManager.request_async()`, the
+  session whose `source_app_user_model_id` is `python.exe` (dev) or
+  `shortcutradio.exe` (build), its media properties, thumbnail and
+  playback info; `try_toggle_play_pause_async()` presses the flyout's button.
+  Run at volume 0 with a real stream (somafm fluid) so the title changes.
+- **Build:** `powershell -ExecutionPolicy Bypass -File packaging\build.ps1`
+  (Windows PowerShell 5.1 is enough; it runs the tests first). To prove a
+  build plays, run the SMTC check above against
+  `dist\ShortCutRadio\shortcutradio.exe --hidden`: the session shows, the
+  flyout's play gives a track title, the Play key pauses it, the overlay
+  off removes it. The installer: `/VERYSILENT /SUPPRESSMSGBOXES
+  /CURRENTUSER /DIR=<scratch>`, then run the installed copy and uninstall
+  it (`unins000.exe /VERYSILENT`) while it runs; the folder must be gone
+  and the settings kept.
+
 ## Not done yet
 
 A GitHub Actions release (build on the oldest supported Ubuntu, so the
-glibc floor drops below this machine's 2.39), a Windows zip with mpv-2.dll
-(check that DLL's GPL/LGPL build against the MIT app first), game hooks (e.g.
-NFSU2 world-load autostart, in the style of the old radio's `/proc/<pid>/fd`
-check), media keys on Windows (SMTC) and macOS (Now Playing) -- same seam as
-`Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`); until
-then they fall back to the listener, which is fine there as no "Unavailable"
-shows -- Windows/macOS key suppression (pynput
-`win32_event_filter` / `darwin_intercept`), and confirming the overlay over
-fullscreen NFSU2.
+glibc floor drops below this machine's 2.39, and on a Windows runner with
+build.ps1), the licence of the bundled libmpv-2.dll (GPL build; ship it, or
+find/build one with `-Dgpl=false`), signing the Windows installer, game hooks
+(e.g. NFSU2 world-load autostart, in the style of the old radio's
+`/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
+and key suppression (pynput `darwin_intercept`), and confirming the overlay
+over fullscreen NFSU2 -- and on Windows over a game in exclusive fullscreen,
+which bypasses the compositor the overlay draws through.
 
 ## Git
 

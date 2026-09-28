@@ -17,6 +17,7 @@ from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, pretty
 from .core.mpris import Mpris
 from .core.player import Player
+from .core.smtc import Smtc
 from .core.sources import art_label
 from .gui import theme
 from .gui.artwork import Artwork, cache_dir
@@ -46,9 +47,17 @@ class App:
 
         self.artwork = Artwork()
         self.player = Player(cfg["sources"], cfg["current"], cfg["volume"])
-        self.mpris = Mpris(cache_dir())
+        # The desktop's Now Playing: MPRIS, or SMTC on Windows. On Linux it
+        # also delivers the bare media keys; on Windows the keyboard hook
+        # takes those like any other key, and SMTC only shows and presses.
+        if sys.platform == "win32":
+            self.media = Smtc(cache_dir())
+            via_desktop = False
+        else:
+            self.media = Mpris(cache_dir())
+            via_desktop = self.media.available
         self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"],
-                               media_via_desktop=self.mpris.available)
+                               media_via_desktop=via_desktop)
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
         self.window = MainWindow(self)
         self.tray = Tray(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
@@ -61,8 +70,8 @@ class App:
         self.hotkeys.triggered.connect(self._on_action)
         self.hotkeys.captured.connect(self.window.shortcuts.on_captured)
         self.hotkeys.ungrabbed.connect(self.window.shortcuts.on_ungrabbed)
-        self.mpris.pressed.connect(self.hotkeys.press_media)
-        self.mpris.raise_requested.connect(self.show_window)
+        self.media.pressed.connect(self.hotkeys.press_media)
+        self.media.raise_requested.connect(self.show_window)
 
         self.actions = {
             "overlay": lambda: self.set_overlay(not cfg["overlay"]["visible"]),
@@ -108,7 +117,7 @@ class App:
         art = self.artwork.for_source(src, s.path or "")
         tile = art_label(src)
         self.overlay.set_now_playing(s, art, tile)
-        self.mpris.set_state(s, art)
+        self.media.set_state(s, art)
         self.window.set_now_playing(s, art, tile)
         if self.tray:
             self.tray.set_now_playing(s, art, tile)
@@ -172,8 +181,8 @@ class App:
         """Be the desktop's media player only while the overlay is on and a
         media key is bound; otherwise those keys belong to other players."""
         keys = self.hotkeys.media_keys()
-        self.mpris.set_keys(keys)
-        self.mpris.set_active(self.config["overlay"]["visible"] and bool(keys))
+        self.media.set_keys(keys)
+        self.media.set_active(self.config["overlay"]["visible"] and bool(keys))
 
     def update_overlay(self, **changes):
         """Change any of the card's settings in one go: reload, then save."""
@@ -256,16 +265,21 @@ class App:
         self.qapp.quit()
 
 
-def _already_running():
-    """Hand over to a running instance (it shows its window) and say so."""
+def _tell_running(message, until_gone=False):
+    """Pass "show" or "quit" to the instance running on this config; False
+    when there is none. `until_gone` waits for it to exit, which closes the
+    connection: an uninstaller must not delete files that are still in use."""
     sock = QLocalSocket()
     sock.connectToServer(INSTANCE_NAME)
-    if sock.waitForConnected(500):
-        sock.write(b"show\n")
-        sock.waitForBytesWritten(500)
+    if not sock.waitForConnected(500):
+        return False
+    sock.write(message + b"\n")
+    sock.waitForBytesWritten(500)
+    if until_gone:
+        sock.waitForDisconnected(10000)
+    else:
         sock.disconnectFromServer()
-        return True
-    return False
+    return True
 
 
 def main(argv=None):
@@ -277,7 +291,13 @@ def main(argv=None):
     qapp.setDesktopFileName("shortcutradio")
     qapp.setQuitOnLastWindowClosed(False)
 
-    if _already_running():
+    if "--quit" in argv:
+        # The uninstaller's way to close the copy it is removing. Windows has
+        # no Restart Manager for uninstalling, and killing by name would also
+        # stop a portable copy elsewhere; this reaches only the same config.
+        _tell_running(b"quit", until_gone=True)
+        return 0
+    if _tell_running(b"show"):
         print("ShortCutRadio is already running -- showing its window.", flush=True)
         return 0
 
@@ -291,10 +311,16 @@ def main(argv=None):
 
     app = App(qapp, argv)
 
+    def on_message(data):
+        if b"quit" in data.split():
+            app.quit()
+        else:
+            app.show_window()
+
     def on_connection():
         conn = server.nextPendingConnection()
         if conn is not None:
-            conn.readyRead.connect(lambda: (conn.readAll(), app.show_window()))
+            conn.readyRead.connect(lambda: on_message(bytes(conn.readAll())))
 
     server.newConnection.connect(on_connection)
 
@@ -307,9 +333,13 @@ def main(argv=None):
     tick.start()
 
     rc = qapp.exec()
+    # Windows can end the loop without App.quit: signing out, or an
+    # installer's Restart Manager closing the app to replace its files.
+    app.save()
     # Everything worth keeping is saved by now. Leave without waiting on the
     # native threads (pynput's XRECORD reader, libmpv, Qt's D-Bus): a stop
     # that never returns there once left a quit ShortCutRadio running forever.
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):
+        if stream:          # None in a Windows GUI build: there is no console
+            stream.flush()
     os._exit(rc)

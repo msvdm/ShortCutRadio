@@ -4,6 +4,7 @@
     shortcutradio.py            start (opens the setup window)
     shortcutradio.py --hidden   start straight to the tray
     shortcutradio.py --version  print the version and exit (starts nothing)
+    shortcutradio.py --quit     close the copy running on this config, if any
 """
 
 import sys
