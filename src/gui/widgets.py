@@ -4,7 +4,7 @@ Everything here reads `theme.tokens()` at paint time, so a theme change only
 needs a repaint, not a rebuild. The art box's picture work is in art.py.
 """
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (QAbstractButton, QComboBox, QFontComboBox,
                                QSizePolicy, QWidget)
@@ -116,6 +116,14 @@ class ArtView(QWidget):
     def apply_theme(self):
         self._art.refit(self.width(), self.devicePixelRatioF(), force=True)
         self.update()
+
+    def event(self, event):
+        # Moved to a screen with another scale (125 % next to 200 %): the
+        # picture was fitted for the old one's pixels, so fit it again.
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            if self._art.refit(self.width(), self.devicePixelRatioF()):
+                self.update()
+        return super().event(event)
 
     def paintEvent(self, _event):
         p = QPainter(self)

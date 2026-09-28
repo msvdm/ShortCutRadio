@@ -11,11 +11,11 @@ Overlay.
 """
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
 
 from ..core.player import VOLUME_MAX
-from .frameless import RESIZE_MARGIN, FramelessWindow
+from .frameless import FramelessWindow, keep_on_screen
 from .overlay_page import OverlayPage
 from .shortcuts_page import ShortcutsPage
 from .sources_page import SourcesPage
@@ -32,10 +32,13 @@ class TabButton(QPushButton):
         self.setFlat(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("active", "false")
+        # Measured in the font it is drawn in when active (14 px, DemiBold),
+        # not the system's default: that one differs from machine to machine,
+        # and a narrower guess clipped the label's first letter.
         f = QFont(self.font())
         f.setPixelSize(14)
         f.setWeight(QFont.Weight.DemiBold)
-        self.setFixedWidth(self.fontMetrics().boundingRect(text).width() + 12)
+        self.setFixedWidth(QFontMetrics(f).horizontalAdvance(text) + 12)
         self.setFont(f)
 
     def set_active(self, on):
@@ -154,15 +157,15 @@ class MainWindow(FramelessWindow):
         self.setObjectName("window")
         self.setWindowTitle("ShortCutRadio")
         self.setWindowIcon(app.icon)
-        # A constant minimum, not the one the current page happens to need.
+        # One fixed size, not whatever the current page happens to need.
         # Each tab has a different layout minimum, and a frameless window that
         # changes its size hints gets re-sized by the window manager: switching
         # to Overlay and back grew the window by a hundred pixels every round
         # trip. Pinning it keeps the hints still. The height fits the Overlay
         # tab, which is the densest page now that the hero is on all three.
-        # It opens at that minimum too: the author's chosen size, measured.
-        self.setMinimumSize(640 + 2 * RESIZE_MARGIN, 600 + 2 * RESIZE_MARGIN)
-        self.resize(self.minimumSize())
+        # The author's chosen size, measured; it is not resizable by choice.
+        self.setFixedSize(640, 600)
+        self._placed = False
 
         self.hero = Hero(app)
         self.sources = SourcesPage(app)
@@ -197,7 +200,7 @@ class MainWindow(FramelessWindow):
             lay.addWidget(p, 1)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(*([RESIZE_MARGIN] * 4))
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.shell)
 
         # The only chrome left. Closing hides to the tray; the music goes on.
@@ -205,6 +208,12 @@ class MainWindow(FramelessWindow):
         self.close_btn.clicked.connect(self.close)
         self.close_btn.raise_()
         self.set_tab(0)
+
+    def place(self):
+        """Before it shows: on the screen under the mouse the first time,
+        and wholly on some screen every time."""
+        keep_on_screen(self, centre=not self._placed)
+        self._placed = True
 
     def set_tab(self, n):
         for i, (b, p) in enumerate(zip(self.tabs, self.pages)):
@@ -229,7 +238,7 @@ class MainWindow(FramelessWindow):
     def is_titlebar(self, pos):
         """The hero and the tab strip stand in for the titlebar.
 
-        Dragging and double-clicking are limited to them: empty space further
+        Dragging is limited to them: empty space further
         down belongs to the page, and grabbing the window from under the
         source list would be a surprise.
         """

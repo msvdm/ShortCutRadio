@@ -3,11 +3,11 @@
 import threading
 
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, Signal
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QPushButton, QTreeWidget,
-                               QTreeWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QPushButton, QTreeWidget, QTreeWidgetItem)
 
 from ..core.scraper import discover
+from .dialogs import FramelessDialog
 
 
 class _Bridge(QObject):
@@ -15,11 +15,9 @@ class _Bridge(QObject):
     done = Signal(object)
 
 
-class AddStreamDialog(QDialog):
+class AddStreamDialog(FramelessDialog):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add Stream")
-        self.resize(720, 420)
+        super().__init__(parent, "Add Stream", size=(740, 480))
         self.selected = []
         self._bridge = _Bridge()
         self._bridge.progress.connect(self._on_progress)
@@ -49,6 +47,7 @@ class AddStreamDialog(QDialog):
         self.toggle_btn.clicked.connect(self._toggle_all)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.ok_btn = self.buttons.addButton("Add selected", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.ok_btn.setObjectName("primary")
         self.ok_btn.setEnabled(False)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -57,11 +56,13 @@ class AddStreamDialog(QDialog):
         bottom.addStretch(1)
         bottom.addWidget(self.buttons)
 
-        lay = QVBoxLayout(self)
+        lay = self.body
         lay.addLayout(row)
         lay.addWidget(self.status)
         lay.addWidget(self.tree, 1)
-        lay.addWidget(QLabel("Double-click a name to rename it before adding."))
+        hint = QLabel("Double-click a name to rename it before adding.")
+        hint.setObjectName("helpText")
+        lay.addWidget(hint)
         lay.addLayout(bottom)
 
     def find(self):

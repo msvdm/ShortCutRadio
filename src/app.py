@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from .core.artfetch import clean_site
 from .core.config import Config, data_dir, normalize_theme
-from .core.hotkeys import Hotkeys, pretty
+from .core.hotkeys import Hotkeys, all_bindings, pretty, source_index
 from .core.mpris import Mpris
 from .core.player import Player
 from .core.smtc import Smtc
@@ -55,7 +55,7 @@ class App:
         else:
             self.media = Mpris(cache_dir())
             via_desktop = self.media.available
-        self.hotkeys = Hotkeys(cfg["shortcuts"], cfg["keysyms"],
+        self.hotkeys = Hotkeys(all_bindings(cfg["shortcuts"], cfg["sources"]), cfg["keysyms"],
                                media_via_desktop=via_desktop)
         self.hotkeys.everywhere = not cfg["shortcuts_need_overlay"]
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
@@ -70,6 +70,7 @@ class App:
         self.hotkeys.triggered.connect(self._on_action)
         self.hotkeys.captured.connect(self.window.shortcuts.on_captured)
         self.hotkeys.ungrabbed.connect(self.window.shortcuts.on_ungrabbed)
+        self.hotkeys.ungrabbed.connect(self.window.sources.on_ungrabbed)
         self.media.pressed.connect(self.hotkeys.press_media)
         self.media.raise_requested.connect(self.show_window)
 
@@ -139,6 +140,12 @@ class App:
             self._save_timer.start()
 
     def _on_action(self, action):
+        index = source_index(action)
+        if index is not None:
+            # A source's own key: like next/previous, it keeps the play state.
+            if index < len(self.config["sources"]):
+                self.player.select_source(index)
+            return
         fn = self.actions.get(action)
         if fn:
             fn()
@@ -193,9 +200,36 @@ class App:
         self._save_timer.start()
 
     # ------------------------------------------------------------------ edits
-    def shortcuts_changed(self):
-        self.hotkeys.set_bindings(self.config["shortcuts"])
+    def _apply_bindings(self):
+        """The Shortcuts tab's keys and every source's own key, live. A
+        source's action is its index, so this follows every edit of the list."""
+        cfg = self.config
+        self.hotkeys.set_bindings(all_bindings(cfg["shortcuts"], cfg["sources"]))
         self._sync_media()
+
+    def free_combo(self, combo):
+        """One key, one job: take `combo` away from whatever holds it, an
+        action on the Shortcuts tab or a source."""
+        if not combo:
+            return
+        sc = self.config["shortcuts"]
+        for action, c in sc.items():
+            if c == combo:
+                sc[action] = ""
+        for src in self.config["sources"]:
+            if src.get("shortcut") == combo:
+                del src["shortcut"]
+
+    def set_source_shortcut(self, src, combo):
+        """A key that jumps straight to `src`; "" removes it."""
+        if combo != src.get("shortcut"):
+            self.free_combo(combo)
+        self.edit_source(src, shortcut=combo or None)
+        self.window.shortcuts.refresh()     # an action may have lost its key
+
+    def shortcuts_changed(self):
+        self._apply_bindings()
+        self.window.sources.refresh()       # a source may have lost its key
         self.overlay.hint_key = pretty(self.config["shortcuts"]["play_pause"])
         self.refresh_state()
         self.save()
@@ -211,6 +245,7 @@ class App:
         # The rows first: the player's state, emitted next, is what marks
         # the one that is playing.
         self.window.sources.refresh()
+        self._apply_bindings()
         self.player.sources_changed()
         self.save()
 
@@ -247,6 +282,8 @@ class App:
 
     # ------------------------------------------------------------------ window
     def show_window(self):
+        if not self.window.isVisible():
+            self.window.place()
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()

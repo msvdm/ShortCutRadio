@@ -63,6 +63,7 @@ MEDIA_KEYS = {"media_play_pause", "media_next", "media_previous", "media_stop"}
 REPEATABLE = {"vol_up", "vol_down"}
 SUPER = "Win" if WINDOWS else "Super"
 ALWAYS_LIVE = "overlay"     # the only action that works with the overlay off
+SOURCE_ACTION = "source:"   # + the source's index: a key that jumps straight to it
 DEBUG = os.environ.get("SHORTCUTRADIO_DEBUG_KEYS") == "1"
 DEBOUNCE_S = 0.25
 REPEAT_S = 0.09             # how fast a held volume key may repeat
@@ -100,6 +101,34 @@ def has_modifier(combo):
 def works_everywhere(combo):
     """May this combo be live all the time? Not if it types something."""
     return has_modifier(combo) or is_media(combo)
+
+
+def source_action(index):
+    return f"{SOURCE_ACTION}{index}"
+
+
+def source_index(action):
+    """"source:3" -> 3; any other action -> None."""
+    if not action.startswith(SOURCE_ACTION):
+        return None
+    try:
+        return int(action[len(SOURCE_ACTION):])
+    except ValueError:
+        return None
+
+
+def all_bindings(shortcuts, sources):
+    """{action: combo}: the Shortcuts tab's actions plus a key per source.
+
+    A source's key is kept on the source itself, so it survives a rename or a
+    reorder and leaves with it. Its action is its *index*, which is why this
+    is rebuilt after every edit of the list.
+    """
+    out = dict(shortcuts)
+    for i, src in enumerate(sources):
+        if src.get("shortcut"):
+            out[source_action(i)] = src["shortcut"]
+    return out
 
 
 def pretty(combo):
@@ -288,6 +317,11 @@ class Hotkeys(QObject):
 
     def begin_capture(self):
         self.capturing = True
+
+    def end_capture(self):
+        """A recording given up without a key: a popup closed mid-way must
+        not leave the next key swallowed."""
+        self.capturing = False
 
     # listener thread ---------------------------------------------------------
     @staticmethod

@@ -1,10 +1,16 @@
-"""The Shortcuts tab: one row per action, its key cap records a new combo."""
+"""The Shortcuts tab: one row per action, its key cap records a new combo.
+
+Also the Shortcut popup of a source (right-click on the Sources tab), which
+records the same way and under the same rules (`refusal`).
+"""
+
+import time
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton, QWidget)
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from ..core.hotkeys import SUPER, has_modifier, pretty, works_everywhere
+from ..core.hotkeys import ALWAYS_LIVE, SUPER, has_modifier, pretty, works_everywhere
+from .dialogs import FramelessDialog, inform, wrapped_label
 from .widgets import PillSwitch, mono_font, repolish
 
 SHORTCUT_ROWS = [
@@ -38,7 +44,22 @@ HELP_ON = ("All of them except the one that turns the overlay on, which always w
 HELP_OFF = ("Off: shortcuts work all the time, in every app, and the app in front does "
             f"not get them. Each needs Ctrl, Alt or {SUPER}: a single key shows ⚠ and "
             "waits until this is on again.")
-SWITCH_W = 34 + 12      # the pill and its gap to the text
+OVERLAY_REFUSAL = (f"The overlay shortcut needs Ctrl, Alt or {SUPER} (e.g. Ctrl+Alt+R): "
+                   "it works everywhere, so a single key would fire while you type.")
+EVERYWHERE_REFUSAL = (f"Shortcuts work everywhere now, so each needs Ctrl, Alt or {SUPER} "
+                      "(e.g. Ctrl+E): a single key would fire while you type.")
+# A source's Shortcut popup: one line for each state of the switch.
+SOURCE_HELP_ON = ("Like every shortcut, it works while the overlay is on. "
+                  "Backspace clears it.")
+SOURCE_HELP_OFF = (f"Shortcuts work all the time now, so it needs Ctrl, Alt or {SUPER}. "
+                   "Backspace clears it.")
+SOURCE_IDLE = (f"A single key waits while shortcuts work everywhere: record it with "
+               f"Ctrl, Alt or {SUPER}, or switch \"{SWITCH_TEXT}\" back on.")
+SOURCE_TIP = "Right-click the source, then Shortcut…, to change it."
+# Qt still gets its own copy of a key the listener recorded (X11), and it can
+# arrive just after the recording ended: Esc would then close the popup.
+CAPTURE_ECHO_S = 0.4
+SWITCH_W = 34 + 12     # the pill and its gap to the text
 # Every word-wrapped label needs a pinned wrapping width. Qt asks such a label
 # how tall it would be at its *minimum* width, and an unpinned one answers with
 # a dozen lines -- which the window then grows to fit and never gives back.
@@ -56,15 +77,47 @@ class KeyCap(QPushButton):
     def __init__(self):
         super().__init__()
         self.capturing = False
+        self._ended = 0.0
         self.setObjectName("keyCap")
         self.setFont(mono_font(12))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAutoDefault(False)      # Enter goes to a popup's OK
+
+    def set_capturing(self, on):
+        if self.capturing and not on:
+            self._ended = time.monotonic()
+        self.capturing = on
 
     def keyPressEvent(self, event):
-        if self.capturing:
+        if self.capturing or time.monotonic() - self._ended < CAPTURE_ECHO_S:
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+def refusal(app, action, combo):
+    """Why `combo` cannot be recorded for `action`, or None. The one place
+    the rules live, for the Shortcuts tab and a source's popup alike."""
+    if action == ALWAYS_LIVE and not has_modifier(combo):
+        return OVERLAY_REFUSAL
+    if app.hotkeys.everywhere and not works_everywhere(combo):
+        return EVERYWHERE_REFUSAL
+    return None
+
+
+def combo_owner(app, combo, src=None):
+    """Who holds `combo` now, other than `src`: an action's label, a
+    source's name, or ""."""
+    if not combo:
+        return ""
+    labels = dict(SHORTCUT_ROWS)
+    for action, c in app.config["shortcuts"].items():
+        if c == combo:
+            return labels.get(action, action)
+    for other in app.config["sources"]:
+        if other is not src and other.get("shortcut") == combo:
+            return f"“{other['name']}”"
+    return ""
 
 
 class ShortcutRow(QFrame):
@@ -89,7 +142,7 @@ class ShortcutRow(QFrame):
         lay.addWidget(self.key)
 
     def set_capturing(self, on):
-        self.key.capturing = on
+        self.key.set_capturing(on)
         for w in (self, self.key):
             w.setProperty("capturing", "true" if on else "false")
             repolish(w)
@@ -193,20 +246,105 @@ class ShortcutsPage(QWidget):
             pass
         elif combo in ("backspace", "delete"):
             sc[row.action] = ""
-        elif row.action == "overlay" and not has_modifier(combo):
-            QMessageBox.information(
-                self, "ShortCutRadio",
-                "The overlay shortcut needs Ctrl, Alt or Super (e.g. Ctrl+Alt+R): "
-                "it works everywhere, so a single key would fire while you type.")
-        elif self.app.hotkeys.everywhere and not works_everywhere(combo):
-            QMessageBox.information(
-                self, "ShortCutRadio",
-                f"Shortcuts work everywhere now, so each needs Ctrl, Alt or {SUPER} "
-                "(e.g. Ctrl+E): a single key would fire while you type.")
+        elif why := refusal(self.app, row.action, combo):
+            inform(self, why)
         else:
-            for other, c in sc.items():       # one key, one job
-                if c == combo and other != row.action:
-                    sc[other] = ""
+            self.app.free_combo(combo)          # one key, one job
             sc[row.action] = combo
         self.app.shortcuts_changed()
         self.refresh()
+
+
+class SourceShortcutDialog(FramelessDialog):
+    """Record a key that jumps straight to one source.
+
+    Recording starts as it opens, through the same listener as the Shortcuts
+    tab. Nothing changes until OK: `combo` is then the new key, "" for none.
+    """
+
+    def __init__(self, parent, app, src):
+        super().__init__(parent, "Shortcut")
+        self.app, self.src = app, src
+        self.combo = src.get("shortcut", "")
+        self._refused = ""
+        hk = app.hotkeys
+
+        self.body.addWidget(wrapped_label(f"A key that switches straight to “{src['name']}”."))
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.key = KeyCap()
+        self.key.setToolTip("Click, then press the new key (Esc cancels, Backspace clears).")
+        self.key.clicked.connect(self._record)
+        clear = QPushButton("Clear")
+        clear.setAutoDefault(False)
+        clear.clicked.connect(self._clear)
+        row.addWidget(self.key, 1)
+        row.addWidget(clear)
+        self.body.addLayout(row)
+        self.note = wrapped_label("")
+        self.note.setObjectName("warnText")
+        self.body.addWidget(self.note)
+        help_text = wrapped_label(SOURCE_HELP_OFF if hk.everywhere else SOURCE_HELP_ON)
+        help_text.setObjectName("helpText")
+        self.body.addWidget(help_text)
+        self.add_buttons()
+
+        hk.captured.connect(self._captured)
+        if hk.error:
+            self.key.setEnabled(False)
+            clear.setEnabled(False)
+            self._refused = f"Global shortcuts are unavailable: {hk.error}"
+            self._show()
+        else:
+            self._record()
+
+    def _record(self):
+        self.key.set_capturing(True)
+        self.key.setFocus()     # swallows Qt's copy of the key being recorded
+        self._refused = ""
+        self._show()
+        self.app.hotkeys.begin_capture()
+
+    def _clear(self):
+        if self.key.capturing:
+            self.key.set_capturing(False)
+            self.app.hotkeys.end_capture()
+        self.combo, self._refused = "", ""
+        self._show()
+
+    def _captured(self, combo):
+        if not self.key.capturing:
+            return              # the Shortcuts tab's recording
+        self.key.set_capturing(False)
+        if combo in ("backspace", "delete"):
+            self.combo = ""
+        elif combo != "esc":
+            self._refused = refusal(self.app, None, combo) or ""
+            if not self._refused:
+                self.combo = combo
+        self._show()
+
+    def _show(self):
+        capturing = self.key.capturing
+        self.key.setText("press a key…" if capturing else pretty(self.combo))
+        self.key.setProperty("capturing", "true" if capturing else "false")
+        repolish(self.key)
+        note = self._refused
+        if not note and self.combo:
+            owner = combo_owner(self.app, self.combo, self.src)
+            if owner:
+                note = f"Now used by {owner}: OK moves it here."
+            elif self.app.hotkeys.everywhere and not works_everywhere(self.combo):
+                note = SOURCE_IDLE
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
+
+    def done(self, result):
+        try:
+            self.app.hotkeys.captured.disconnect(self._captured)
+        except (RuntimeError, TypeError):
+            pass
+        if self.key.capturing:
+            self.key.set_capturing(False)
+            self.app.hotkeys.end_capture()
+        super().done(result)

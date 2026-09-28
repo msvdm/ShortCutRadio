@@ -54,7 +54,8 @@ src/core/smtc.py          Windows' Now Playing (SMTC, pywinrt), behind mpris.py'
 src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
 src/gui/widgets.py        the hand-painted parts: pill switch, transport, meters, labels
 src/gui/art.py            the art box: trim, fit, backdrop, initials tile (FittedArt)
-src/gui/frameless.py      a titlebar-less window: resize margin, move, maximise
+src/gui/frameless.py      a titlebar-less, fixed-size window: move, keep_on_screen
+src/gui/dialogs.py        the popups as frameless cards: ask_text, inform, pick_color
 src/gui/main_window.py    hero + tab strip; each tab is its own page module:
 src/gui/sources_page.py     the list, its row delegate, add/edit/remove
 src/gui/shortcuts_page.py   key caps and capture
@@ -135,6 +136,16 @@ The README still tells other people to make a venv: that is their machine.
   Windows hook and `press_media` follow it. The key caps have a pinned
   height: ⚠ is drawn from the taller emoji font, and the rows jumped on
   every flip of the switch.
+- **A source can have a key of its own** (right-click -> `Shortcut…`). It
+  is kept on the source (`src["shortcut"]`), so it survives a rename or a
+  reorder and leaves with the source; its action is `source:<index>`
+  (`hotkeys.all_bindings`), rebuilt after every edit of the list
+  (`App._apply_bindings`). Pressing it is `select_source`: it keeps the play
+  state, like next/previous -- the author chose that. It is an ordinary
+  binding to `Hotkeys`, so the overlay rule, the switch, idle ⚠ and the
+  grabs apply unchanged. One key, one job across both kinds
+  (`App.free_combo`); the recording rules live in `shortcuts_page.refusal`
+  for the tab and the popup alike. The row shows the key as a key cap.
 - **Observe + grab, not grab alone.** The pynput listener (XRECORD) fires the
   actions. keygrab.py only swallows keys. XRECORD still sees grabbed keys, so
   each action fires once, and it also sees keys inside fullscreen Wine games,
@@ -174,14 +185,29 @@ The README still tells other people to make a venv: that is their machine.
   menu Play, Play/Pause) starts playback. `pause` is set *before* loading, or
   the new source is heard for a moment.
 - **The window has no titlebar.** It is frameless: `#window` is a transparent
-  carrier holding a 6 px resize margin, `#shell` is the rounded card inside it.
-  Dragging and double-click-to-maximise are limited to the hero and the tab
-  strip -- they stand in for the titlebar, and grabbing the window from under
-  the source list surprised the first build. The edges call Qt's
-  `startSystemResize`, the rest `startSystemMove`, both with a manual fallback.
+  carrier for the round corners, `#shell` is the rounded card inside it.
+  Dragging is limited to the hero and the tab strip -- they stand in for the
+  titlebar, and grabbing the window from under the source list surprised the
+  first build. It calls `startSystemMove`, with a manual fallback.
+- **The window is a fixed size, 640 x 600: no resizing, no maximising.** The
+  author's call -- nothing in it needs more room. (A 6 px resize margin was
+  tried; on Windows a translucent window's alpha-0 pixels let clicks through
+  to the desktop behind, so the margin was never grabbable.) Before it shows
+  it is put wholly on a screen's free area (`frameless.keep_on_screen`):
+  centred on the screen under the mouse the first time, pulled back in later
+  if its spot is gone; a screen too small for it keeps its top-left, the part
+  that moves it, in view. The popups size to their content (Add Stream is a
+  fixed 740 x 480) and Qt centres them on the window.
   The only chrome is the × at the hero's top right; it and Esc hide to the
   tray, exactly as closing always did -- silently: the author disliked the
   "still running in the tray" notice, so there is none.
+- **The popups have no titlebar either.** The author found the system's
+  ugly next to the skin. `dialogs.FramelessDialog` is the same card as the
+  window (`Frameless` mixin): a header with the title and a ×, which moves
+  it. `ask_text`, `inform` and
+  `pick_color` replace QInputDialog, QMessageBox and QColorDialog (Qt's
+  picker embedded as a widget). The OS file pickers stay native, by the
+  author's choice: their sidebar and recent places are worth more.
 - **The hero is the same on all three tabs.** It first shrank to a compact
   strip on Shortcuts and disappeared on Overlay; the author disliked exactly
   that. One `Hero`, full size, always visible: what is playing and its
@@ -287,6 +313,20 @@ The README still tells other people to make a venv: that is their machine.
   3 s. Click-through was verified: its X input shape is empty. Drawing over a
   fullscreen game works because Muffin keeps compositing fullscreen windows
   (`unredirect-fullscreen-windows=false`).
+- **The card's Position is a monitor and a corner** (the Overlay tab's
+  `Position`; with one monitor, just the four corners). The monitor is saved
+  by its system name, `overlay["screen"]` (`\\.\DISPLAY2`, `DP-1`); "" is the
+  main one, and Monitor 1 in the list is always the main one, the rest left to
+  right. A saved monitor that is not connected is not forgotten: the card sits
+  on the main one meanwhile (`overlay.pick_screen`) and goes back when it
+  returns -- the author asked for that fallback. The card and the list both
+  follow `screenAdded` / `screenRemoved` / `primaryScreenChanged`.
+- **The card never covers a visible taskbar.** Its corner is the corner of
+  the monitor's free area (`availableGeometry`), at whichever edge the
+  taskbar sits, and it follows `availableGeometryChanged` (a taskbar moved,
+  resized, set to hide). The first build used the whole screen and put a
+  bottom card over the tray; the author ruled that out. An auto-hiding
+  taskbar reserves nothing, so there the card goes to the edge.
 - **The Linux build is a folder.** PyInstaller onedir, not one file:
   portability is "one folder", the app may start at every login (one-file
   unpacks ~100 MB each time), and the LGPL libraries stay replaceable files.
@@ -444,12 +484,23 @@ The README still tells other people to make a venv: that is their machine.
   different layout minimum, and when Qt sent the new hints Muffin re-applied
   the geometry: Overlay → Sources grew the window ~100 px every round trip,
   and it never shrank back. The same code with a titlebar is rock steady.
-  `setMinimumSize` once, in the constructor, and it stops.
+  `setFixedSize` once, in the constructor, and it stops.
+- **Scale: everything is in logical pixels, and Qt 6 does the rest.**
+  High-DPI scaling is always on and fractional (125 %, 150 %) by default;
+  Windows gets per-monitor awareness from Qt itself, so the build carries no
+  DPI manifest (one saying "system aware" would blur every second monitor).
+  Font sizes are pinned in the stylesheet in px, so a machine's default font
+  changes nothing -- except where code measures text: measure it in the font
+  it is drawn in. The tab buttons measured theirs in the default font and
+  clipped "Shortcuts" at 150 %. Pictures follow the screen they are on: a
+  `DevicePixelRatioChange` (Qt 6.6, hence `PySide6>=6.6`) re-fits the art in
+  `ArtView` and the overlay, or a window dragged from a 100 % to a 200 %
+  monitor shows it blurred. The overlay follows the primary screen's
+  `geometryChanged` and `primaryScreenChanged`: a game switching resolution
+  otherwise left the card at the old corner until the next title change.
 - **A word-wrapped QLabel needs a pinned wrapping width.** Qt asks it how tall
   it would be at its *minimum* width, so an unpinned one claims a dozen lines
   and drags the window's minimum up with it (`WRAP_W`).
-- **`Qt.Edge` is a flag enum: `int(...)` on it raises.** Use `.value` as the
-  dict key for the resize cursors.
 - **The single instance is per config, not per user.** It used to be
   `shortcutradio-<user>`, so the scratch-config test run this file prescribes just
   handed its window to the real ShortCutRadio and exited. The name now carries a
@@ -564,6 +615,12 @@ The README still tells other people to make a venv: that is their machine.
 
 - `python -m pytest -q tests` -- the pynput tests skip; the
   hook tests feed `KeyHook.event` raw events on any platform.
+- **Scale check without a second monitor:** start `App` with
+  `QT_QPA_PLATFORM=offscreen`, `QT_SCALE_FACTOR=1.25` (1.5, 2),
+  `QT_QPA_FONTDIR=C:/Windows/Fonts` (offscreen has no fonts: every letter a
+  box) and `Hotkeys.start` stubbed, then `grab()` each tab and popup to PNG.
+  The offscreen screen is 800 px wide divided by the factor, so 1.5 also
+  shows `keep_on_screen` on a screen smaller than the window.
 - Scratch config: `$env:APPDATA = "<scratch dir>"` before starting (the
   counterpart of `XDG_CONFIG_HOME=/tmp/x`). Stop a test instance with
   `shortcutradio.py --quit` under the same `APPDATA`, or

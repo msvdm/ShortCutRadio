@@ -1,21 +1,34 @@
 """The Overlay tab: size, margins, font, transparency and colors of the card."""
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase
-from PySide6.QtWidgets import (QColorDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QSlider, QSpinBox, QVBoxLayout,
                                QWidget)
 
 from ..core.config import DEFAULTS, opacity_from_percent, transparency_percent
 from . import theme
-from .overlay import overlay_family, pick_style
+from .dialogs import pick_color
+from .overlay import ordered_screens, overlay_family, overlay_screen, pick_style
 from .widgets import PillSwitch, ThemedComboBox, ThemedFontComboBox, mono_font
 
 CORNERS = [("top-right", "Top right"), ("top-left", "Top left"),
            ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left")]
 # What `Reset to default` restores: the look, not whether the card is on or
-# which corner it was put in.
-LOOK_KEYS = [k for k in DEFAULTS["overlay"] if k not in ("visible", "corner")]
+# where it was put.
+LOOK_KEYS = [k for k in DEFAULTS["overlay"] if k not in ("visible", "screen", "corner")]
+
+
+def positions(screens):
+    """(label, screen, corner) for the Position list. One monitor: just the
+    corners. More: each monitor's four, Monitor 1 being the main one, which
+    is kept as "" so the card follows whichever monitor is the main one."""
+    out = []
+    for n, screen in enumerate(screens):
+        for corner, text in CORNERS:
+            label = f"Monitor {n + 1} · {text}" if len(screens) > 1 else text
+            out.append((label, "" if n == 0 else screen.name(), corner))
+    return out
 
 
 def _label(text):
@@ -56,16 +69,18 @@ class OverlayPage(QWidget):
         top.setVerticalSpacing(10)
         top.setColumnStretch(1, 1)
         top.setColumnStretch(3, 1)
-        self.corner = ThemedComboBox()
-        self.corner.setToolTip("Which screen corner the card sits in")
-        for key, text in CORNERS:
-            self.corner.addItem(text, key)
-        self.corner.currentIndexChanged.connect(
-            lambda _: app.update_overlay(corner=self.corner.currentData()))
+        self.position = ThemedComboBox()
+        self.position.setToolTip("Where the card sits: which corner, and with more than\n"
+                                 "one monitor, which monitor. Monitor 1 is the main one.")
+        self._positions = []        # (screen, corner) per item of the list
+        self.position.currentIndexChanged.connect(self._position_changed)
+        qapp = QGuiApplication.instance()
+        for signal in (qapp.screenAdded, qapp.screenRemoved, qapp.primaryScreenChanged):
+            signal.connect(self._fill_positions)
         top.addWidget(_label("Width"), 0, 0)
         top.addWidget(self._spin("width", 200, 1200, " px", "Card width"), 0, 1)
-        top.addWidget(_label("Corner"), 0, 2)
-        top.addWidget(self.corner, 0, 3)
+        top.addWidget(_label("Position"), 0, 2)
+        top.addWidget(self.position, 0, 3)
         top.addWidget(_label("Margin X"), 1, 0)
         top.addWidget(self._spin("margin_x", 0, 500, " px",
                                  "Distance from the left/right screen edge"), 1, 1)
@@ -172,10 +187,10 @@ class OverlayPage(QWidget):
     def refresh(self):
         """Put the config values into the controls without re-saving them."""
         conf = self.app.config["overlay"]
-        widgets = [self.corner, self.scroll_switch, self.transp_slider, self.transp_spin,
+        widgets = [self.scroll_switch, self.transp_slider, self.transp_spin,
                    self.font_family, *self.style_boxes.values(), *self.spins.values()]
         blockers = [QSignalBlocker(w) for w in widgets]
-        self.corner.setCurrentIndex(max(0, self.corner.findData(conf["corner"])))
+        self._fill_positions()
         for key, sb in self.spins.items():
             sb.setValue(int(conf[key]))
         self.scroll_switch.setChecked(bool(conf["scroll"]))
@@ -199,6 +214,31 @@ class OverlayPage(QWidget):
     def set_overlay_checked(self, on):
         with QSignalBlocker(self.overlay_switch):
             self.overlay_switch.setChecked(on)
+
+    def _fill_positions(self, *_):
+        """List the positions of the monitors connected now, and select where
+        the card is. A chosen monitor that is unplugged shows as the main
+        one -- where the card is -- but stays saved, so it goes back there."""
+        conf = self.app.config["overlay"]
+        items = positions(ordered_screens())
+        self._positions = [(screen, corner) for _, screen, corner in items]
+        screen = conf["screen"]
+        if overlay_screen(conf) is QGuiApplication.primaryScreen():
+            screen = ""
+        want = (screen, conf["corner"])
+        with QSignalBlocker(self.position):
+            self.position.clear()
+            for label, _, _ in items:
+                self.position.addItem(label)
+            if want in self._positions:
+                self.position.setCurrentIndex(self._positions.index(want))
+            elif ("", conf["corner"]) in self._positions:
+                self.position.setCurrentIndex(self._positions.index(("", conf["corner"])))
+
+    def _position_changed(self, index):
+        if 0 <= index < len(self._positions):
+            screen, corner = self._positions[index]
+            self.app.update_overlay(screen=screen, corner=corner)
 
     def _fill_styles(self, family):
         """List the family's styles; keep the saved style, else the nearest one."""
@@ -232,7 +272,7 @@ class OverlayPage(QWidget):
 
     def _pick_color(self, key):
         conf = self.app.config["overlay"]
-        c = QColorDialog.getColor(QColor(conf[key]), self, self.color_buttons[key].toolTip())
+        c = pick_color(self, conf[key], self.color_buttons[key].toolTip())
         if c.isValid():
             self.app.update_overlay(**{key: c.name()})
             self.refresh()

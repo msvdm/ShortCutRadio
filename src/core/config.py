@@ -38,6 +38,9 @@ DEFAULTS = {
     "keysyms": {},
     "overlay": {
         "visible": False,
+        # The monitor, by its system name; "" = the main one, which is also
+        # where the card goes while the chosen monitor is not connected.
+        "screen": "",
         "corner": "top-right",
         "margin_x": 28,
         "margin_y": 24,
@@ -130,6 +133,9 @@ class Config:
         # Checked once, here, so the rest of the app can trust what it reads.
         srcs = self.data["sources"] if isinstance(self.data["sources"], list) else []
         self.data["sources"] = [s for s in srcs if _usable(s)]
+        for s in self.data["sources"]:
+            if not isinstance(s.get("shortcut", ""), str):
+                del s["shortcut"]
         self.data["theme"] = normalize_theme(self.data["theme"])
 
     def __getitem__(self, key):

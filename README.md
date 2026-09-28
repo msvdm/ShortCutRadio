@@ -40,12 +40,17 @@ turn the volume up from the keyboard. Press the key again and it's gone.
 
    <img src="docs/shortcuts.png" alt="The Shortcuts tab: a key for each action, and the switch that ties them to the overlay" width="640">
 
+   A favourite station can have a key of its own: right-click it on the
+   **Sources** tab and choose **Shortcut…**. The key shows on the right of
+   its row and follows the same rules as the other shortcuts.
+
 3. Press **Ctrl+Alt+R** to show the overlay. Now your shortcuts work.
    Want them to work all the time, like any other app's? Turn off
    **Shortcuts only while the overlay is on** at the bottom of the Shortcuts
    tab. Then every shortcut needs Ctrl, Alt or Win/Super (Ctrl+E,
    Alt+Shift+K and so on), so a single key never gets in the way of typing.
-4. **Overlay** tab: choose the corner, size, font and colours of the card.
+4. **Overlay** tab: choose where the card sits (the corner, and the monitor
+   if you have more than one), its size, font and colours.
 
    <img src="docs/overlay-tab.png" alt="The Overlay tab: width, corner, margins, font, sizes, colours and transparency of the card" width="640">
 

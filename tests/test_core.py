@@ -14,8 +14,9 @@ from src.core.config import (Config, normalize_theme, opacity_from_percent,
                               transparency_percent)
 from src.core.coverart import cover_file, embedded_art
 from src.core import hotkeys
-from src.core.hotkeys import (Hotkeys, has_modifier, is_media, make_combo,
-                              parse_combo, pretty, works_everywhere)
+from src.core.hotkeys import (Hotkeys, all_bindings, has_modifier, is_media, make_combo,
+                              parse_combo, pretty, source_action, source_index,
+                              works_everywhere)
 from src.core.keygrab import keysym_for
 from src.core.keygrab_win import LLKHF_UP, KeyHook, vk_name
 from src.core.net import parse_icecast
@@ -27,6 +28,8 @@ from src.core.scraper import clean_name, harvest, looks_streamy, parse_playlist
 from src.core.sources import art_label, folder_tracks, name_from_url
 # QImage needs no QApplication, so the art maths can be tested like the rest.
 from src.gui.art import content_box, monogram
+from src.gui.overlay import pick_screen
+from src.gui.overlay_page import positions
 
 BADROCK_SNIPPET = """
 <a class="ext-stream-url" href="https://streams.badrockradio.net/hard-heavy">x</a>
@@ -363,6 +366,62 @@ def test_windows_hook_capture_takes_the_key(monkeypatch):
     hk.live = True
     assert key("media_play_pause")      # a media key is an ordinary key here
     assert fired == ["play_pause"]
+
+
+def test_a_source_key_is_an_action_by_index():
+    srcs = [{"name": "a"}, {"name": "b", "shortcut": "ctrl+2"}, {"name": "c", "shortcut": ""}]
+    got = all_bindings({"vol_up": "]", "play_pause": ""}, srcs)
+    assert got == {"vol_up": "]", "play_pause": "", "source:1": "ctrl+2"}
+    assert source_index(source_action(3)) == 3
+    assert source_index("vol_up") is None and source_index("source:x") is None
+
+
+def test_a_source_key_follows_the_overlay_rule(monkeypatch):
+    hk, key, fired, _, _ = _hooked(monkeypatch, **{"source:0": "]", "source:1": "ctrl+e"})
+    assert not key("]") and not key("]", up=True)   # overlay off: the app gets ]
+    hk.live = True
+    assert key("]") and key("]", up=True)
+    assert fired == ["source:0"]
+    hk.live = False
+    hk.everywhere = True                # a single key waits, a combo works
+    assert hk.idle("]") and not hk.idle("ctrl+e")
+    assert not key("]")
+    key("ctrl")
+    assert key("e")
+    assert fired == ["source:0", "source:1"]
+
+
+def test_ending_a_capture_frees_the_next_key(monkeypatch):
+    hk, key, fired, _, _ = _hooked(monkeypatch, vol_up="]")
+    hk.live = True
+    hk.begin_capture()
+    hk.end_capture()                    # a popup closed while recording
+    assert key("]") and fired == ["vol_up"]
+
+
+class _Screen:
+    def __init__(self, name):
+        self._name = name
+
+    def name(self):
+        return self._name
+
+
+def test_the_card_falls_back_to_the_main_monitor():
+    main, side = _Screen(r"\\.\DISPLAY1"), _Screen(r"\\.\DISPLAY2")
+    assert pick_screen(r"\\.\DISPLAY2", [main, side], main) is side
+    assert pick_screen(r"\\.\DISPLAY2", [main], main) is main   # unplugged
+    assert pick_screen("", [main, side], main) is main
+
+
+def test_positions_name_the_monitor_only_when_there_are_two():
+    main, side = _Screen("A"), _Screen("B")
+    assert [p[0] for p in positions([main])] == [
+        "Top right", "Top left", "Bottom right", "Bottom left"]
+    both = positions([main, side])
+    assert len(both) == 8
+    assert both[0] == ("Monitor 1 · Top right", "", "top-right")    # the main one
+    assert both[7] == ("Monitor 2 · Bottom left", "B", "bottom-left")
 
 
 def test_windows_key_names_follow_pynput():

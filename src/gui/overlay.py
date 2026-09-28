@@ -7,7 +7,7 @@ through, and it is re-raised every few seconds because a fullscreen window
 that raises itself would otherwise cover it.
 """
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QGuiApplication, QPainter, QPainterPath
 from PySide6.QtWidgets import QWidget
 
@@ -29,6 +29,25 @@ RAISE_MS = 3000
 def overlay_family(conf):
     """The configured font family, or the system UI font when unset."""
     return conf.get("font_family") or QGuiApplication.font().family()
+
+
+def pick_screen(name, screens, primary):
+    """The monitor called `name`, or `primary` when there is none by that
+    name (unset, or unplugged: the card comes back when it is)."""
+    return next((s for s in screens if name and s.name() == name), primary)
+
+
+def ordered_screens():
+    """Monitor 1 is the main one, the rest follow left to right."""
+    primary = QGuiApplication.primaryScreen()
+    rest = sorted((s for s in QGuiApplication.screens() if s is not primary),
+                  key=lambda s: (s.geometry().x(), s.geometry().y()))
+    return ([primary] if primary else []) + rest
+
+
+def overlay_screen(conf):
+    return pick_screen(conf.get("screen", ""), QGuiApplication.screens(),
+                       QGuiApplication.primaryScreen())
 
 
 def pick_style(styles, wanted, bold):
@@ -82,6 +101,15 @@ class Overlay(QWidget):
         self._scroll_timer = QTimer(self, interval=SCROLL_MS)
         self._scroll_timer.timeout.connect(self._advance)
         self._apply_fonts()
+        # The card sits in a corner of its monitor, so it has to follow that
+        # monitor: a game switching resolution, a monitor plugged in, unplugged
+        # or made the main one, a scale changed. Otherwise it stays where the
+        # old corner was until the next title change moves it.
+        self._screen = None
+        qapp = QGuiApplication.instance()
+        for signal in (qapp.primaryScreenChanged, qapp.screenAdded, qapp.screenRemoved):
+            signal.connect(self._follow_screen)
+        self._follow_screen()
 
     def _apply_fonts(self):
         c, family = self.conf, overlay_family(self.conf)
@@ -207,19 +235,46 @@ class Overlay(QWidget):
         return min(overflow, max(0, self._tick - SCROLL_HOLD))
 
     def _reposition(self):
-        screen = QGuiApplication.primaryScreen()
+        screen = self._screen
         if screen is None:
             return
-        geo = screen.geometry()
+        # The free area, not the whole screen: a visible taskbar is never
+        # covered, at whichever edge it sits. One that hides itself reserves
+        # nothing, and there the corner is the screen's own.
+        geo = screen.availableGeometry()
         corner = self.conf["corner"]
         mx, my = int(self.conf["margin_x"]), int(self.conf["margin_y"])
         x = geo.right() - self.width() - mx + 1 if "right" in corner else geo.left() + mx
         y = geo.bottom() - self.height() - my + 1 if "bottom" in corner else geo.top() + my
         self.move(x, y)
 
+    def _follow_screen(self, *_):
+        """Onto the chosen monitor, or the main one while it is not there."""
+        screen = overlay_screen(self.conf)
+        if screen is not self._screen:
+            if self._screen is not None:
+                try:
+                    self._screen.availableGeometryChanged.disconnect(self._relayout)
+                except (RuntimeError, TypeError):
+                    pass
+            self._screen = screen
+            if screen is not None:
+                # The free area changes with the resolution and with the
+                # taskbar: moved, resized, set to hide itself.
+                screen.availableGeometryChanged.connect(self._relayout)
+        self._relayout()
+
+    def event(self, event):
+        # Now on a screen with another scale: the art was fitted for the old
+        # one's pixels.
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            if self._art.refit(self._art_size(), self.devicePixelRatioF()):
+                self.update()
+        return super().event(event)
+
     def reload_conf(self):
         self._apply_fonts()
-        self._relayout()
+        self._follow_screen()       # the monitor may be what changed
         # The card's height follows the fonts, and the art box follows it.
         self._art.refit(self._art_size(), self.devicePixelRatioF())
 

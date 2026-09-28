@@ -120,13 +120,11 @@ def stylesheet(t=None):
     t = t or _current
     return f"""
 /* ---------------------------------------------------------------- base */
-QDialog, QMessageBox, QInputDialog, QColorDialog {{
-    background: {t['window']};
-}}
 /* The window has no titlebar: #window is only the transparent carrier that
-   holds the resize margin, and #shell is the card the author actually sees. */
-#window {{ background: transparent; }}
-#shell {{
+   lets the corners be round, and #shell is the card the author actually sees.
+   The popups are built the same way (dialogs.py). */
+#window, QDialog#dialog {{ background: transparent; }}
+#shell, #dialogShell {{
     background: {t['window']};
     border: 1px solid {t['border']};
     border-radius: 14px;
@@ -169,6 +167,21 @@ QPushButton#resetBtn {{
 }}
 QPushButton#resetBtn:hover {{ color: {t['text']}; border-color: {t['strong']}; }}
 QPushButton#resetBtn:pressed {{ background: {t['raised']}; }}
+
+/* ---------------------------------------------------------------- popups */
+#dialogTitle {{ font-size: 14px; font-weight: 600; color: {t['text']}; }}
+QColorDialog {{ background: transparent; }}
+QPushButton#primary {{
+    font-weight: 600; color: {t['on_accent']};
+    background: {t['accent']}; border: 1px solid {t['accent']};
+}}
+QPushButton#primary:pressed {{
+    background: {t['accent_pressed']}; color: {t['on_accent_pressed']};
+    border-color: {t['accent_pressed']};
+}}
+QPushButton#primary:disabled {{
+    color: {t['disabled']}; background: {t['control']}; border-color: {t['border']};
+}}
 
 /* ------------------------------------------------------------- sources */
 QListWidget#srcList {{ background: transparent; border: none; outline: none; }}

@@ -1,69 +1,65 @@
 """A top-level window with no titlebar, that is its own chrome.
 
-The window is a transparent carrier: its layout keeps a RESIZE_MARGIN around
-the card it holds, and presses in that margin resize the window. Presses on
-whatever the subclass calls its titlebar (`is_titlebar`) move it, and a
-double-click there maximises. Both ask the window manager first
-(`startSystemResize` / `startSystemMove`) and fall back to moving the window
-by hand.
+The window is a fixed size -- no resizing, no maximising: the author's
+choice, and one less thing a window manager can get wrong. Presses on
+whatever the subclass calls its titlebar (`is_titlebar`) move it, asking
+the window manager first (`startSystemMove`) and moving the window by hand
+when it won't.
 
 Only presses the children did not take arrive here, so a list keeps its
 drag-to-reorder and every button keeps its click.
+
+The behaviour is a mixin (`Frameless`) so the popups (dialogs.py) wear the
+same chrome as the window.
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import QWidget
 
-RESIZE_MARGIN = 6           # the transparent grip around the card
 
-CURSORS = {
-    (Qt.Edge.LeftEdge).value: Qt.CursorShape.SizeHorCursor,
-    (Qt.Edge.RightEdge).value: Qt.CursorShape.SizeHorCursor,
-    (Qt.Edge.TopEdge).value: Qt.CursorShape.SizeVerCursor,
-    (Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeVerCursor,
-    (Qt.Edge.LeftEdge | Qt.Edge.TopEdge).value: Qt.CursorShape.SizeFDiagCursor,
-    (Qt.Edge.RightEdge | Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeFDiagCursor,
-    (Qt.Edge.RightEdge | Qt.Edge.TopEdge).value: Qt.CursorShape.SizeBDiagCursor,
-    (Qt.Edge.LeftEdge | Qt.Edge.BottomEdge).value: Qt.CursorShape.SizeBDiagCursor,
-}
+def keep_on_screen(window, centre=False):
+    """Move `window` wholly onto a screen's free area (not under a taskbar).
+
+    `centre`: onto the middle of the screen under the mouse -- the first
+    showing. Otherwise it stays where it was left, pulled back in if that
+    spot is gone (a monitor unplugged, a resolution changed). A window
+    bigger than the screen keeps its top left, and with it the part that
+    moves it, in view.
+    """
+    screen = (QGuiApplication.screenAt(QCursor.pos()) if centre else
+              QGuiApplication.screenAt(window.frameGeometry().center()))
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is None:
+        return
+    area = screen.availableGeometry()
+    geo = window.frameGeometry()
+    if centre:
+        geo.moveCenter(area.center())
+    x = max(area.left(), min(geo.left(), area.right() + 1 - geo.width()))
+    y = max(area.top(), min(geo.top(), area.bottom() + 1 - geo.height()))
+    window.move(x, y)
 
 
-class FramelessWindow(QWidget):
-    def __init__(self):
-        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+class Frameless:
+    """Mixed in before a QWidget or a QDialog; call `_frameless()` once."""
+
+    def _frameless(self):
         self._drag_from = None
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMouseTracking(True)
 
     def is_titlebar(self, pos):
         """Whether `pos` (in window coordinates) stands in for the titlebar."""
         return False
 
-    def _edges(self, pos):
-        """Which window edges `pos` sits on, inside the resize margin."""
-        edges = Qt.Edge(0)
-        if pos.x() <= RESIZE_MARGIN:
-            edges |= Qt.Edge.LeftEdge
-        elif pos.x() >= self.width() - RESIZE_MARGIN:
-            edges |= Qt.Edge.RightEdge
-        if pos.y() <= RESIZE_MARGIN:
-            edges |= Qt.Edge.TopEdge
-        elif pos.y() >= self.height() - RESIZE_MARGIN:
-            edges |= Qt.Edge.BottomEdge
-        return edges
-
     def mousePressEvent(self, event):
-        """Presses the children did not want: the edges resize, the top drags."""
-        pos = event.position().toPoint()
-        if event.button() != Qt.MouseButton.LeftButton or self.isMaximized():
+        """Presses the children did not want: the titlebar's drag the window."""
+        if (event.button() != Qt.MouseButton.LeftButton
+                or not self.is_titlebar(event.position().toPoint())):
             return super().mousePressEvent(event)
         handle = self.windowHandle()
-        edges = self._edges(pos)
-        if edges and handle is not None:
-            handle.startSystemResize(edges)
-        elif not edges and not self.is_titlebar(pos):
-            return super().mousePressEvent(event)
-        elif handle is None or not handle.startSystemMove():
+        if handle is None or not handle.startSystemMove():
             # No help from the window manager: carry it ourselves.
             self._drag_from = event.globalPosition().toPoint() - self.pos()
         event.accept()
@@ -72,26 +68,14 @@ class FramelessWindow(QWidget):
         if self._drag_from is not None:
             self.move(event.globalPosition().toPoint() - self._drag_from)
             return
-        shape = CURSORS.get(self._edges(event.position().toPoint()).value,
-                            Qt.CursorShape.ArrowCursor)
-        self.setCursor(shape)
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         self._drag_from = None
         super().mouseReleaseEvent(event)
 
-    def mouseDoubleClickEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        if self.isMaximized():
-            self.showNormal()
-        elif self.is_titlebar(event.position().toPoint()):
-            self.showMaximized()
 
-    def changeEvent(self, event):
-        # Maximised there is nothing to grip, and the margin would show as a
-        # transparent frame around the card.
-        if event.type() == event.Type.WindowStateChange and self.layout():
-            m = 0 if self.isMaximized() else RESIZE_MARGIN
-            self.layout().setContentsMargins(m, m, m, m)
-        super().changeEvent(event)
+class FramelessWindow(Frameless, QWidget):
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.Window)
+        self._frameless()

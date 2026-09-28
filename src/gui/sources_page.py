@@ -2,21 +2,24 @@
 
 Double-click plays, drag reorders, right-click edits a source. The row that is
 playing carries an accent bar and, while something is audible, a level meter.
+A source with a key of its own shows it as a key cap at the row's right end.
 """
 
 from PySide6.QtCore import QRectF, QSignalBlocker, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter,
                            QPainterPath)
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QInputDialog,
-                               QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-                               QPushButton, QStyle, QStyledItemDelegate, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QLabel,
+                               QListWidget, QListWidgetItem, QMenu, QPushButton, QStyle,
+                               QStyledItemDelegate, QToolTip, QVBoxLayout, QWidget)
 
 from ..core.artfetch import clean_site, site_for_stream
+from ..core.hotkeys import pretty
 from ..core.sources import describe, folder_tracks, is_folder, make_folder, make_stream
 from . import theme
 from .add_stream import AddStreamDialog
-from .widgets import Meter, draw_level_bars, level_bars_width
+from .dialogs import ask_text, inform
+from .shortcuts_page import IDLE_TIP, SOURCE_TIP, UNGRABBED_TIP, SourceShortcutDialog
+from .widgets import Meter, draw_level_bars, level_bars_width, mono_font
 
 LIST_HINT = "drag to reorder · double-click to play"
 NOTE_MS = 4000
@@ -27,6 +30,7 @@ SOURCE_ROLE = Qt.ItemDataRole.UserRole
 INDEX_ROLE = Qt.ItemDataRole.UserRole + 1
 ROW_BARS, ROW_BAR_LOW, ROW_BAR_HIGH = 4, 5, 17
 ART_EXTS = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.svg)"
+CAP_H, CAP_PAD, CAP_RADIUS = 22, 8, 6
 
 
 class SourceDelegate(QStyledItemDelegate):
@@ -45,6 +49,27 @@ class SourceDelegate(QStyledItemDelegate):
         sub = QFont(option.font)
         sub.setPixelSize(12)
         return name, sub
+
+    def _cap(self, option, index):
+        """The source's own key, drawn like the Shortcuts tab's key caps:
+        (text, rect, tooltip), or None. The rect sits at the row's right end."""
+        combo = (index.data(SOURCE_ROLE) or {}).get("shortcut")
+        if not combo:
+            return None
+        leaks = combo in self.page.ungrabbed
+        idle = self.page.app.hotkeys.idle(combo)
+        text = pretty(combo) + (" ⚠" if leaks or idle else "")
+        w = QFontMetrics(mono_font(12)).horizontalAdvance(text) + 2 * CAP_PAD
+        r = option.rect
+        rect = QRectF(r.right() - self.PAD_X - w, r.center().y() - CAP_H / 2, w, CAP_H)
+        return text, rect, IDLE_TIP if idle else UNGRABBED_TIP if leaks else SOURCE_TIP
+
+    def helpEvent(self, event, view, option, index):
+        cap = self._cap(option, index)
+        if cap and cap[1].contains(event.pos()):
+            QToolTip.showText(event.globalPos(), cap[2], view)
+            return True
+        return super().helpEvent(event, view, option, index)
 
     def sizeHint(self, option, index):
         name, sub = self._fonts(option, False)
@@ -82,6 +107,20 @@ class SourceDelegate(QStyledItemDelegate):
         x += self.BAR_W + self.GAP
 
         right = r.right() - self.PAD_X
+        cap = self._cap(option, index)
+        if cap:
+            text, rect, _ = cap
+            # The key cap's 2 px bottom edge, then its face: as on the tab.
+            edge = QPainterPath()
+            edge.addRoundedRect(rect, CAP_RADIUS, CAP_RADIUS)
+            painter.fillPath(edge, QColor(t["strong"]))
+            face = QPainterPath()
+            face.addRoundedRect(rect.adjusted(1, 1, -1, -2), CAP_RADIUS - 1, CAP_RADIUS - 1)
+            painter.fillPath(face, QColor(t["keycap"]))
+            painter.setFont(mono_font(12))
+            painter.setPen(QColor(t["text"]))
+            painter.drawText(rect.adjusted(0, 0, 0, -1), Qt.AlignmentFlag.AlignCenter, text)
+            right -= rect.width() + self.GAP
         meter = self.page.meter
         if playing and meter.running:
             draw_level_bars(painter, right, r.center().y() + ROW_BAR_HIGH / 2,
@@ -111,6 +150,7 @@ class SourcesPage(QWidget):
         super().__init__()
         self.app = app
         self.playing_row = -1       # the row the player has loaded, or -1
+        self.ungrabbed = set()      # live combos the focused app still gets
         self._audible = False
         # The bars cost a repaint every 70 ms, so they only run while this
         # page is on screen and something is actually playing.
@@ -187,6 +227,12 @@ class SourcesPage(QWidget):
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsDragEnabled)
                 self.list.addItem(it)
 
+    def on_ungrabbed(self, combos):
+        """The grabber's report, as on the Shortcuts tab: a source's key
+        that isn't taken gets the same ⚠."""
+        self.ungrabbed = set(combos)
+        self.list.viewport().update()
+
     def _note(self, text):
         """A short message where the list hint sits, then back to the hint."""
         self.hint.setText(text)
@@ -222,6 +268,7 @@ class SourcesPage(QWidget):
         m = QMenu(self)
         m.addAction("Play", lambda: self.app.player.play_source(row))
         m.addAction("Rename…", lambda: self.rename(src))
+        m.addAction("Shortcut…", lambda: self.set_shortcut(src))
         if is_folder(src):
             sh = m.addAction("Shuffle")
             sh.setCheckable(True)
@@ -245,8 +292,8 @@ class SourcesPage(QWidget):
         and guessing lands on the CDN's own logo.
         """
         current = src.get("site") or site_for_stream(src.get("target") or "")
-        site, ok = QInputDialog.getText(
-            self, "Station page", f"Where “{src['name']}” lives on the web.\n"
+        site, ok = ask_text(
+            self, "Station page", f"Where “{src['name']}” lives on the web. "
             "Its logo is taken from that page; leave it empty to guess.",
             text=current)
         if not ok:
@@ -261,9 +308,16 @@ class SourcesPage(QWidget):
             self.app.edit_source(src, art=path)
 
     def rename(self, src):
-        name, ok = QInputDialog.getText(self, "Rename source", "Name:", text=src["name"])
+        name, ok = ask_text(self, "Rename source", "Name:", text=src["name"])
         if ok and name.strip():
             self.app.edit_source(src, name=name.strip())
+
+    def set_shortcut(self, src):
+        """A key that jumps straight to this source, under the same rules as
+        every other shortcut."""
+        dlg = SourceShortcutDialog(self, self.app, src)
+        if dlg.exec():
+            self.app.set_source_shortcut(src, dlg.combo)
 
     def remove_selected(self):
         rows = sorted({self.list.row(it) for it in self.list.selectedItems()})
@@ -276,7 +330,7 @@ class SourcesPage(QWidget):
             return
         n = len(folder_tracks(path))
         if n == 0:
-            QMessageBox.warning(self, "ShortCutRadio", f"No audio files found in\n{path}")
+            inform(self, f"No audio files found in\n{path}")
             return
         self.app.add_sources([make_folder(path)])
         self._note(f"Added folder with {n} tracks.")
