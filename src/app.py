@@ -2,7 +2,6 @@
 
 import getpass
 import hashlib
-import locale
 import os
 import signal
 import sys
@@ -301,10 +300,6 @@ def main(argv=None):
         print("ShortCutRadio is already running -- showing its window.", flush=True)
         return 0
 
-    # libmpv refuses to start under a non-C numeric locale, and Qt has just
-    # set the locale from the environment.
-    locale.setlocale(locale.LC_NUMERIC, "C")
-
     QLocalServer.removeServer(INSTANCE_NAME)     # stale socket after a crash
     server = QLocalServer()
     server.listen(INSTANCE_NAME)
@@ -337,7 +332,7 @@ def main(argv=None):
     # installer's Restart Manager closing the app to replace its files.
     app.save()
     # Everything worth keeping is saved by now. Leave without waiting on the
-    # native threads (pynput's XRECORD reader, libmpv, Qt's D-Bus): a stop
+    # native threads (pynput's XRECORD reader, Qt's player and D-Bus): a stop
     # that never returns there once left a quit ShortCutRadio running forever.
     for stream in (sys.stdout, sys.stderr):
         if stream:          # None in a Windows GUI build: there is no console

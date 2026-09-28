@@ -38,7 +38,8 @@ shortcutradio.py          entry; single instance via QLocalServer ("show" messag
 src/app.py                wires everything; quit = save, stop, os._exit
 src/core/config.py        JSON config; portable mode if shortcutradio.portable sits next to the app
 src/core/sources.py       source = {name, kind: stream|folder, target, shuffle}; names from URLs
-src/core/player.py        libmpv (python-mpv) in-process; one `changed` signal with a PlayerState
+src/core/player.py        Qt Multimedia (QMediaPlayer); one `changed` signal with a PlayerState
+src/core/relay.py         localhost stream relay: ICY/Ogg titles out, bare audio in to Qt
 src/core/net.py           the one door to the network: open_url, NET_ERRORS, Icecast status
 src/core/scraper.py       Add Stream: URL/page/playlist -> list of verified streams (stdlib only)
 src/core/artfetch.py      a station's page -> its logo (stdlib only; same style as scraper)
@@ -62,26 +63,49 @@ src/gui/artwork.py        which picture a source gets, cached on disk, fetched o
 src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
 tests/test_core.py        pytest, pure functions only
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
-requirements.txt          pip dependencies (libmpv comes from the system)
-shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/, libmpv left out
-shortcutradio-windows.spec  the same on Windows, libmpv-2.dll bundled
+requirements.txt          pip dependencies (PySide6 brings the player and its FFmpeg)
+shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/
+shortcutradio-windows.spec  the same on Windows
 packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop;
                           build.ps1 (tests, build, zip, installer), shortcutradio.iss
                           (Inno Setup), make_ico.py, THIRD_PARTY(-windows).txt
 ```
 
-Stack: Python 3.12, PySide6, python-mpv (needs system libmpv2), pynput,
+Stack: Python 3.12, PySide6 (Qt Multimedia and its FFmpeg are the player), pynput,
 python-xlib, jeepney (pure Python, for the media-key claim only). The venv is `.venv/`. It matches the author's AnyDMX project layout.
 On Windows (Python 3.13 here): no pynput, python-xlib or jeepney; pywinrt's
-`winrt-*` packages for SMTC; libmpv-2.dll from shinchiro's mpv-winbuild-cmake
-in the checkout's root (gitignored). The venv is `.venv\`.
+`winrt-*` packages for SMTC. No venv on Windows: the author keeps
+one global Python (per-user 3.13 on PATH) for every project, so the
+requirements are installed into it and `python` is that interpreter.
 
 ## Decisions — do not re-litigate
 
-- **Engine = mpv, in-process via libmpv.** The author asked whether any player
-  would do. Most can play audio, but mpv is built to be scripted headless, runs
-  on Windows, macOS and Linux, and on Windows ships as one DLL. MPRIS/SMTC
-  media-key integration is a later add-on at the edges, not a reason to switch.
+- **Engine = Qt's own player (Qt Multimedia), not mpv.** mpv came first:
+  built to be scripted headless, on every platform, one DLL on Windows. The
+  author reopened that for the Windows port, where shinchiro's libmpv-2.dll
+  was 116 MB of a 194 MB app and GPL-2.0-or-later -- the MIT app's download
+  under GPL terms, with exact sources to host. PySide6 already ships Qt
+  Multimedia with its own FFmpeg 7 (avcodec-61): `avcodec_license()` says
+  LGPL 2.1 or later, the build has no `--enable-gpl`, and it has what radio
+  needs (mp3, aac with HE-AACv2, opus, vorbis, flac; hls, https). So the
+  engine is `QMediaPlayer` + `QAudioOutput`; python-mpv, libmpv2 and the DLL
+  are gone, the Windows app is 99 MB, and macOS gets an engine for free.
+  Measured against mpv on the same mounts (Windows, volume 0), time to
+  sound: MP3 0.92 s against 0.81, AAC 0.88 / 0.81, Opus 0.36 / 0.38, HLS
+  0.48 / 0.44; a station change about 0.9 s, a stop under 0.1 s, the GUI
+  thread never blocked for more than about 0.1 s. What Qt doesn't do is
+  ours: song titles (the relay, next) and a folder's playlist (below).
+  Volume is cubic, as mpv's was (`volume_gain`), so the 5 % steps sound even.
+- **Stream titles come from our own relay** (`core/relay.py`). Qt's metadata
+  has codec and bitrate, never Icecast's StreamTitle. So a stream plays from
+  `http://127.0.0.1:<port>/<token>`: the relay fetches it with Icy-MetaData,
+  cuts the metadata out every `icy-metaint` bytes, reports StreamTitle and
+  the `icy-url` header, and serves the bare audio. An Ogg stream's titles
+  are in its comment packets (Opus, Vorbis, FLAC). Anything else -- HLS, a
+  plain file -- gets a 302 to its real address, so FFmpeg fetches it itself
+  and an HLS playlist's segments resolve against the right host. Loopback
+  only, one live stream; every report carries its token, so a late one from
+  the previous station is dropped.
 - **Shortcuts are live only while the overlay is on, and while live they are
   TAKEN.** The focused app must not receive them. The author asked for exactly
   this: *overlay visible → key taken; overlay hidden → key free* -- and for
@@ -114,12 +138,16 @@ in the checkout's root (gitignored). The venv is `.venv\`.
   they would without ShortCutRadio. Ctrl+Next and the like stay ordinary grabbed
   shortcuts (the desktop binds the bare key only). Volume/mute keys stay the
   system's. Without a session bus the media keys fall back to the listener.
-- **Folders are expanded in Python** (walk → sort/shuffle → temp m3u →
-  `loadlist`), and `loop-playlist=inf` is set for folders, `no` for streams.
-  This makes shuffle and skip behave the same on mpv 0.37, where `loadfile`
-  has no index argument.
-- **Streams retry** 5 s after an EOF or error (see `Player._on_end_file`).
-  Replacing a file ends it with reason ABORTED, which must be ignored.
+- **Folders are expanded in Python** (walk → sort/shuffle) and the player
+  keeps the list and its place: the end of a track moves on, looping, and
+  next/previous wrap round at both ends. A file that won't play is skipped,
+  unless none of them will. A local track never counts as "connecting" (only
+  a stall does), or the status blinked on every track change.
+- **Streams retry** 5 s after an end or an error (`Player._stream_ended`).
+  Qt's signals can arrive late from a source already replaced: an end
+  counts only while something is loaded and Qt still says EndOfMedia, an
+  error only while `error()` is set. A dropped stream is that retry; the
+  relay does not reconnect on its own.
 - **Next/previous source keep the play state:** paused stays paused, stopped
   stays stopped (`Player.select_source`). Only an explicit play (double-click,
   menu Play, Play/Pause) starts playback. `pause` is set *before* loading, or
@@ -177,8 +205,8 @@ in the checkout's root (gitignored). The venv is `.venv\`.
 - **The transport sits between the name and the ×**, centred by a stretch on
   each side rather than pinned to the right edge, with the hero's right margin
   reserving the ×'s corner so they cannot collide at the minimum width.
-- **Volume stops at 100 %.** mpv will happily amplify to 130 and the slider
-  used to offer it; `Player.VOLUME_MAX` is the one place that says otherwise,
+- **Volume stops at 100 %.** Louder is amplifying -- mpv offered 130 and the
+  slider used to go there; `Player.VOLUME_MAX` is the one place that says otherwise,
   and a louder value in an older config is clamped on load.
 - **A station's page is found before its logo is.** In order: the page the
   streams were harvested from at Add Stream time (`source["site"]`), the
@@ -193,8 +221,8 @@ in the checkout's root (gitignored). The venv is `.venv\`.
 - **The level meters are decorative.** Random targets with a fast attack and a
   slow decay (`core/levels.py`), ~14 fps, and they run only while something is
   audible and the bars are on screen -- the overlay's repaint lands on top of
-  a running game. Asking mpv for real levels would mean an audio filter and a
-  metadata poll for something nobody can check against the music.
+  a running game. Real levels are possible (Qt's `QAudioBufferOutput` hands
+  over the decoded audio), but nobody can check them against the music.
 - **One state, one edit path.** The player emits a frozen `PlayerState`;
   the hero, the overlay and the tray each turn its `phase` (empty, error,
   stopped, paused, connecting, playing) into their own words, and read
@@ -238,14 +266,13 @@ in the checkout's root (gitignored). The venv is `.venv\`.
   3 s. Click-through was verified: its X input shape is empty. Drawing over a
   fullscreen game works because Muffin keeps compositing fullscreen windows
   (`unredirect-fullscreen-windows=false`).
-- **The Linux build is a folder, with the system's libmpv.** PyInstaller
-  onedir, not one file: portability is "one folder", the app may start at
-  every login (one-file unpacks ~100 MB each time), and the LGPL libraries
-  stay replaceable files. PyInstaller spots python-mpv's `find_library("mpv")`
-  and bundles libmpv with all of ffmpeg (385 MB instead of 173); the spec
-  drops libmpv and every library only it needed (an `ldd` difference, so
-  what Qt or Python also load stays). python-mpv then finds the system's, and
-  the .deb depends on `libmpv2`. Two downloads, one job each, and the
+- **The Linux build is a folder.** PyInstaller onedir, not one file:
+  portability is "one folder", the app may start at every login (one-file
+  unpacks ~100 MB each time), and the LGPL libraries stay replaceable files.
+  It carries Qt Multimedia and PySide6's FFmpeg, so the .deb no longer
+  depends on `libmpv2` (and the spec no longer has to cut out the 212 MB
+  libmpv tree PyInstaller used to drag in). Not yet rebuilt on Mint since
+  the switch. Two downloads, one job each, and the
   author chose the order: the `.deb` is **the** download (menu, icon, clean
   removal, settings in `~/.config`); the tarball is the second option,
   portable (it ships with `shortcutradio.portable`, settings in `data/` beside
@@ -283,17 +310,14 @@ in the checkout's root (gitignored). The venv is `.venv\`.
   same rule: a session only while the overlay is on and a media key is
   bound; switched off, it is gone from the flyout. `App.media` holds
   whichever one the platform has.
-- **The Windows build bundles libmpv-2.dll**, in `_internal\` (there is no
-  system copy to depend on; `player.py` puts that folder on %PATH% for
-  python-mpv's `find_library`). The spec drops what PySide6's hooks drag
-  in unused: the virtual-keyboard plugin (and with it Qt Quick, QML,
-  OpenGL), the PDF image plugin, the 20 MB software-OpenGL fallback and
-  Qt's translations -- 239 MB to 194 MB, 116 of it libmpv. A version
-  resource names the exe "ShortCutRadio" for Explorer, Task Manager and
-  the Now Playing flyout. **The DLL is GPL-2.0-or-later** (shinchiro's
-  build, no `-Dgpl=false`; its own version resource says so) -- whether to
-  ship that with the MIT app or find an LGPL build is the author's call,
-  still open.
+- **The Windows build is 99 MB** (the installer 30 MB, the zip 41 MB; it
+  was 194 MB with libmpv-2.dll). It carries Qt Multimedia's FFmpeg backend
+  and PySide6's FFmpeg (21 MB). The spec drops what PySide6's hooks drag in
+  unused: the virtual-keyboard plugin (and with it Qt Quick, QML, OpenGL),
+  the PDF image plugin, the Media Foundation backend (the player runs on
+  FFmpeg), the 20 MB software-OpenGL fallback and Qt's translations. A
+  version resource names the exe "ShortCutRadio" for Explorer, Task Manager
+  and the Now Playing flyout.
 - **Windows downloads: the installer first, the zip second**, the same order
   as .deb/tarball. Inno Setup, per user by default (no UAC prompt; the
   first page offers all users), Start menu entry, optional desktop icon,
@@ -309,8 +333,19 @@ in the checkout's root (gitignored). The venv is `.venv\`.
 
 ## Traps — measured, do not re-litigate
 
-- **libmpv refuses a non-C numeric locale.** Reset `LC_NUMERIC` to `C` *after*
-  `QApplication()` is created (Qt sets the locale from the environment).
+- **A Python QIODevice cannot feed QMediaPlayer.** Qt's FFmpeg reads the
+  device on its own thread; the next `setSource` waits for that thread on
+  the GUI thread while holding the GIL, and the thread waits for the GIL to
+  call `readData`. It hung on the first station change (a faulthandler dump
+  showed both). Hence the relay: FFmpeg reads a socket, in C. (A device
+  would also have to block in `readData`: FFmpeg takes 0 bytes as the end.)
+- **Qt's player stalls on FLAC-in-Ogg after four buffers** -- five
+  stations, played directly too (Qt 6.11.2). The relay rewraps it as plain
+  FLAC: "fLaC", the STREAMINFO marked as the last block, then the frames; a
+  later chain's (the next song's) headers are skipped. Then it plays.
+- **Most Ogg/Opus mounts send no title**: their comment says only
+  `ENCODER=`. mpv showed nothing for them either. Radio Paradise's first
+  FLAC chain has an empty comment; its title comes with the next song.
 - **Never call pynput `Listener.stop()` on quit.** Its XRECORD stop blocked
   forever and left a "quit" ShortCutRadio running, still holding the keys. Quit
   saves, releases the grabs, then `os._exit`.
@@ -491,7 +526,7 @@ in the checkout's root (gitignored). The venv is `.venv\`.
 
 ### Windows
 
-- `.venv\Scripts\python -m pytest -q tests` -- the pynput tests skip; the
+- `python -m pytest -q tests` -- the pynput tests skip; the
   hook tests feed `KeyHook.event` raw events on any platform.
 - Scratch config: `$env:APPDATA = "<scratch dir>"` before starting (the
   counterpart of `XDG_CONFIG_HOME=/tmp/x`). Stop a test instance with
@@ -534,8 +569,9 @@ in the checkout's root (gitignored). The venv is `.venv\`.
 
 A GitHub Actions release (build on the oldest supported Ubuntu, so the
 glibc floor drops below this machine's 2.39, and on a Windows runner with
-build.ps1), the licence of the bundled libmpv-2.dll (GPL build; ship it, or
-find/build one with `-Dgpl=false`), signing the Windows installer, game hooks
+build.ps1), the Linux side of the switch to Qt Multimedia (the spike on
+Mint, running from source without `libmpv2`, `build.sh`, and whether the
+.deb needs a sound library in `Depends`), signing the Windows installer, game hooks
 (e.g. NFSU2 world-load autostart, in the style of the old radio's
 `/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
 and key suppression (pynput `darwin_intercept`), and confirming the overlay

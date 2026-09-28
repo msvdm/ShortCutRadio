@@ -9,11 +9,8 @@
 #   ShortCutRadio-<ver>-windows-x64-setup.exe   the same app, installed with a
 #                                               Start menu entry and uninstaller
 #
-# Needs, besides .venv (pip install -r requirements.txt):
-#   libmpv-2.dll in the checkout's root. Windows has no system libmpv, so the
-#     build bundles this one: take it from the mpv-dev-x86_64-*.7z archive of
-#     https://github.com/shinchiro/mpv-winbuild-cmake/releases. It is
-#     gitignored; see packaging\THIRD_PARTY-windows.txt for its licence.
+# Needs, besides Python on PATH with requirements.txt installed (this
+# machine has one global Python, no venv):
 #   Inno Setup 6 (https://jrsoftware.org/isinfo.php) for the installer.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -26,12 +23,9 @@ function Run {
 
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$Py = Join-Path $Root ".venv\Scripts\python.exe"
+$Py = (Get-Command python).Source
 $Version = (& $Py -c "from src import __version__; print(__version__)").Trim()
 Write-Host "== ShortCutRadio $Version"
-if (-not (Test-Path libmpv-2.dll)) {
-    throw "libmpv-2.dll is missing from $Root -- see the top of this script"
-}
 $Iscc = Get-Command iscc -ErrorAction SilentlyContinue
 $Iscc = if ($Iscc) { $Iscc.Source } else { "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $Iscc)) { throw "Inno Setup 6 is not installed (no $Iscc)" }

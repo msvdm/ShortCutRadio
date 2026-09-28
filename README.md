@@ -49,10 +49,10 @@ on **Windows 10 and 11**.
 
 ### Linux
 
-You need Python 3.10 or newer and the mpv player library.
+You need Python 3.10 or newer.
 
 ```bash
-sudo apt install libmpv2 python3-venv git
+sudo apt install python3-venv git
 git clone https://github.com/msvdm/ShortCutRadio.git
 cd ShortCutRadio
 python3 -m venv .venv
@@ -74,8 +74,7 @@ python3 -m venv .venv
   other program.
 - **`ShortCutRadio-*-linux-x64.tar.gz`**, a portable folder. Unpack it anywhere
   and run `shortcutradio` inside. It keeps its settings in the folder, so it can
-  live on a USB stick. It needs the system's mpv library (`libmpv2`), which
-  Linux Mint already has.
+  live on a USB stick.
 
 ### Windows
 
@@ -88,7 +87,7 @@ Build it yourself on Windows: `packaging\build.ps1` makes two files in
 - **`ShortCutRadio-*-windows-x64.zip`**, a portable folder. Unzip it anywhere
   and run `shortcutradio.exe` inside. It keeps its settings in the folder.
 
-Both include everything they need, mpv too. The installer isn't signed yet,
+Both include everything they need. The installer isn't signed yet,
 so Windows may warn that it comes from an unknown publisher: choose
 **More info**, then **Run anyway**.
 

@@ -12,21 +12,19 @@ A folder, not a single file, on purpose:
   to a temp directory on each start;
 - Qt and the other LGPL libraries stay separate, replaceable files.
 
-libmpv is NOT bundled. python-mpv finds the system's at run time, and the
-.deb depends on libmpv2. Bundling it would drag in all of ffmpeg.
+The player is Qt Multimedia (core/player.py), with the FFmpeg that ships
+inside PySide6 (LGPL): nothing audio-related is needed from the system
+beyond what Qt itself loads.
 
 There are no data files: the icon is drawn in code (gui/tray.py).
 """
-
-import os
-import subprocess
 
 # Never imported by this app. PyInstaller only collects the Qt modules that
 # are imported anyway; this keeps stray hooks from pulling the big ones in.
 excludes = [
     "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQml",
     "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtWebEngineCore",
-    "PySide6.QtWebEngineWidgets", "PySide6.QtMultimedia", "PySide6.QtCharts",
+    "PySide6.QtWebEngineWidgets", "PySide6.QtCharts",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtSql", "PySide6.QtTest",
     "tkinter", "unittest", "pydoc", "pytest", "numpy", "PIL",
 ]
@@ -43,30 +41,6 @@ a = Analysis(
     noarchive=False,
 )
 
-
-def ldd(path):
-    """Names of the shared libraries `path` loads, all the way down."""
-    try:
-        out = subprocess.run(["ldd", path], capture_output=True, text=True).stdout
-    except OSError:
-        return set()
-    return {line.split()[0] for line in out.splitlines() if "=>" in line}
-
-
-# PyInstaller sees python-mpv's `find_library("mpv")` and bundles libmpv with
-# its whole tree -- ffmpeg, x265, codec2 ... over 200 MB. Drop libmpv and
-# every library only it needed; what the rest of the app loads stays.
-mpv = [b for b in a.binaries if os.path.basename(b[0]).startswith("libmpv.so")]
-if mpv:
-    mpv_tree = ldd(mpv[0][1]) | {os.path.basename(b[0]) for b in mpv}
-    needed = set()
-    for name, src, _ in a.binaries:
-        if os.path.basename(name) not in mpv_tree:
-            needed |= ldd(src)
-    drop = mpv_tree - needed
-    a.binaries = [b for b in a.binaries if os.path.basename(b[0]) not in drop]
-    print(f"shortcutradio.spec: left out libmpv and {len(drop) - len(mpv)} libraries "
-          "only it needed; the system's libmpv2 is used instead")
 
 pyz = PYZ(a.pure)
 

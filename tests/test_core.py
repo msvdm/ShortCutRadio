@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import random
+import struct
 import time
 
 import pytest
@@ -18,7 +19,9 @@ from src.core.hotkeys import (Hotkeys, has_modifier, is_media, make_combo,
 from src.core.keygrab import keysym_for
 from src.core.keygrab_win import LLKHF_UP, KeyHook, vk_name
 from src.core.net import parse_icecast
-from src.core.player import EMPTY_STATE, PlayerState, make_state, now_playing
+from src.core.player import (EMPTY_STATE, PlayerState, make_state, now_playing,
+                             volume_gain)
+from src.core.relay import IcyStripper, OggReader, comment_title, stream_title
 from src.core.mpris import key_for, metadata, playback_status, player_props
 from src.core.scraper import clean_name, harvest, looks_streamy, parse_playlist
 from src.core.sources import art_label, folder_tracks, name_from_url
@@ -362,11 +365,20 @@ def test_mpris_methods_become_keys():
 
 
 def test_now_playing():
-    assert now_playing({"ARTIST": "A", "TITLE": "T"}, "", "/m/x.flac", "folder") == "A – T"
-    assert now_playing({}, "x", "/m/x.flac", "folder") == "x"
+    assert now_playing({"artist": "A", "title": "T"}, "/m/x.flac", "folder") == "A – T"
+    assert now_playing({"title": "T"}, "/m/x.flac", "folder") == "T"
+    assert now_playing({}, "/m/x.flac", "folder") == "x"
     url = "https://ice1.somafm.com/groovesalad-128-mp3"
-    assert now_playing({"icy-title": "Song"}, "", url, "stream") == "Song"
-    assert now_playing({}, "groovesalad-128-mp3", url, "stream") == ""
+    assert now_playing({"title": "Song"}, url, "stream") == "Song"
+    assert now_playing({"title": "groovesalad-128-mp3"}, url, "stream") == ""
+    assert now_playing({"title": url}, url, "stream") == ""
+    assert now_playing({}, url, "stream") == ""
+
+
+def test_volume_is_cubic_and_capped():
+    assert volume_gain(100) == 1.0 and volume_gain(0) == 0.0
+    assert volume_gain(50) == 0.125
+    assert volume_gain(130) == 1.0
 
 
 def test_transparency_percent():
@@ -632,9 +644,9 @@ def test_icecast_status_with_one_mount_is_still_a_list():
     assert parse_icecast([]) == []
 
 
-IDLE_PROPS = {"metadata": None, "media-title": None, "path": None, "pause": False,
-              "volume": 70, "playlist-pos": None, "playlist-count": 0,
-              "core-idle": True, "idle-active": True}
+IDLE_PROPS = {"loaded": False, "paused": False, "ready": False, "volume": 70,
+              "meta": {}, "path": None, "icy_url": "", "track_index": None,
+              "track_count": 0}
 
 
 def test_state_phase_follows_one_ladder():
@@ -644,20 +656,94 @@ def test_state_phase_follows_one_ladder():
     def state(src=stream, count=1, error="", **props):
         return make_state({**IDLE_PROPS, **props}, 0, src, count, error)
 
-    playing = {"idle-active": False, "core-idle": False}
+    playing = {"loaded": True, "ready": True}
     assert EMPTY_STATE.phase == "empty"
     assert state(src=None, count=0).phase == "empty"
     assert state(error="Reconnecting…", **playing).phase == "error"
     assert state().phase == "stopped"
-    paused = state(pause=True, **playing)
+    paused = state(paused=True, **playing)
     assert paused.phase == "paused" and paused.playing is False
-    connecting = state(**{"idle-active": False})
+    connecting = state(loaded=True)
     assert connecting.phase == "connecting" and not connecting.audible
     on = state(**playing)
     assert on.phase == "playing" and on.audible and on.playing
     assert not on.can_skip_track
-    tracks = state(src=folder, path="/m/a.mp3", **{"playlist-pos": 2, "playlist-count": 9},
-                   **playing)
+    tracks = state(src=folder, path="/m/a.mp3", track_index=2, track_count=9, **playing)
     assert tracks.can_skip_track and (tracks.track_pos, tracks.track_count) == (3, 9)
     assert tracks.track == "a"
     assert state().track == "" and state().path is None     # nothing loaded
+
+
+def test_icy_metadata_is_cut_out_of_the_audio_at_any_chunk_size():
+    audio = bytes(range(256)) * 8                       # 2048 bytes
+    meta = b"StreamTitle='Song';".ljust(32, b"\0")
+    body = audio[:1000] + b"\x02" + meta + audio[1000:2000] + b"\x00" + audio[2000:]
+    for size in (1, 7, 1000, 1001, len(body)):
+        strip, out, blocks = IcyStripper(1000), b"", []
+        for i in range(0, len(body), size):
+            a, b = strip.feed(body[i:i + size])
+            out += a
+            blocks += b
+        assert out == audio and blocks == [meta]
+
+
+def test_stream_title():
+    assert stream_title(b"StreamTitle='A - B';StreamUrl='';\0\0") == "A - B"
+    assert stream_title(b"StreamTitle='Rock';n'Roll';StreamUrl='x';") == "Rock';n'Roll"
+    assert stream_title(b"StreamTitle='';") == ""
+    assert stream_title("StreamTitle='БНР';".encode("utf-8")) == "БНР"
+    assert stream_title("StreamTitle='Café';".encode("latin-1")) == "Café"
+    assert stream_title(b"StreamUrl='x';") is None
+
+
+def _comments(*tags):
+    out = struct.pack("<I", 6) + b"vendor" + struct.pack("<I", len(tags))
+    for t in tags:
+        out += struct.pack("<I", len(t.encode())) + t.encode()
+    return out
+
+
+def _page(packets, bos=False):
+    """An Ogg page holding whole `packets` (the CRC is left blank: nobody checks)."""
+    lacing, body = b"", b""
+    for p in packets:
+        n = len(p)
+        lacing += b"\xff" * (n // 255) + bytes([n % 255])
+        body += p
+    return (b"OggS\x00" + bytes([2 if bos else 0]) + b"\0" * 20 + bytes([len(lacing)])
+            + lacing + body)
+
+
+def test_comment_title():
+    assert comment_title(_comments("ARTIST=A", "TITLE=T")) == "A – T"
+    assert comment_title(_comments("title=T")) == "T"
+    assert comment_title(_comments("ENCODER=butt")) is None
+    assert comment_title(b"\x05\x00") is None
+
+
+def test_ogg_opus_passes_through_and_names_the_song():
+    stream = (_page([b"OpusHead" + b"\0" * 11], bos=True)
+              + _page([b"OpusTags" + _comments("ARTIST=A", "TITLE=T")])
+              + _page([b"\x01" * 300, b"\x02" * 40]))
+    reader, out, titles = OggReader(), b"", []
+    for i in range(0, len(stream), 50):
+        a, t = reader.feed(stream[i:i + 50])
+        out += a
+        titles += t
+    assert out == stream and titles == ["A – T"]
+
+
+def test_ogg_flac_is_rewrapped_as_plain_flac():
+    streaminfo = b"\x00\x00\x00\x22" + bytes(range(34))
+    head = b"\x7fFLAC\x01\x00\x00\x01fLaC" + streaminfo
+    frame1, frame2 = b"\xff\xf8" + b"a" * 600, b"\xff\xf8" + b"b" * 30
+    stream = (_page([head], bos=True)
+              + _page([b"\x84" + b"\0\0\0" + _comments("TITLE=One")])
+              + _page([frame1, frame2])
+              # the next song: a new chain repeats the headers
+              + _page([head], bos=True)
+              + _page([b"\x84" + b"\0\0\0" + _comments("TITLE=Two")])
+              + _page([frame2]))
+    out, titles = OggReader().feed(stream)
+    assert out == b"fLaC" + b"\x80" + streaminfo[1:] + frame1 + frame2 + frame2
+    assert titles == ["One", "Two"]

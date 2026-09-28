@@ -4,9 +4,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-# local dev-only libmpv DLL (Windows has no system package; packaging bundles
-# its own copy in Phase 4)
-*.dll
 # portable mode keeps settings next to the app
 shortcutradio.portable
 data/

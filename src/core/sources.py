@@ -5,9 +5,8 @@ A source is a plain dict so it round-trips through the config untouched:
 Two optional keys join it later: "site", the station's web page (where its logo
 comes from), and "art", a picture the author picked by hand.
 
-A folder is expanded here, in Python, rather than handing mpv the directory:
-that makes shuffle and track skipping behave the same on every mpv version and
-puts every track straight into mpv's playlist.
+A folder is expanded here, in Python: the player walks the list itself, so
+shuffle and track skipping are ours and behave the same everywhere.
 """
 
 import os

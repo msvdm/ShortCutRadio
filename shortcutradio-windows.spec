@@ -6,10 +6,8 @@ installer from it. PyInstaller cannot cross-compile, so this is built on
 Windows, as shortcutradio.spec is on Linux -- and a folder rather than one
 file for the same reasons given there.
 
-Unlike Linux, libmpv IS bundled: Windows has no system copy to depend on.
-It is libmpv-2.dll from the checkout's root (see packaging/build.ps1 for
-where it comes from), and lands in _internal/ with the other libraries,
-where core/player.py looks for it.
+The player is Qt Multimedia (core/player.py), and its FFmpeg -- LGPL, the
+build that ships inside PySide6 -- comes along with it, as on Linux.
 
 The icon is the mark drawn in code (gui/tray.py), written out as an .ico at
 build time by packaging/make_ico.py.
@@ -28,10 +26,6 @@ from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo,
 sys.path.insert(0, SPECPATH)
 from src import __version__  # noqa: E402
 
-MPV = os.path.join(SPECPATH, "libmpv-2.dll")
-if not os.path.exists(MPV):
-    raise SystemExit(f"{MPV} is missing: see packaging/build.ps1")
-
 ICON = os.path.join(SPECPATH, "build", "shortcutradio.ico")
 os.makedirs(os.path.dirname(ICON), exist_ok=True)
 subprocess.run([sys.executable, os.path.join(SPECPATH, "packaging", "make_ico.py"), ICON],
@@ -42,7 +36,7 @@ subprocess.run([sys.executable, os.path.join(SPECPATH, "packaging", "make_ico.py
 excludes = [
     "PySide6.QtQuick", "PySide6.QtQuickWidgets", "PySide6.QtQml",
     "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtWebEngineCore",
-    "PySide6.QtWebEngineWidgets", "PySide6.QtMultimedia", "PySide6.QtCharts",
+    "PySide6.QtWebEngineWidgets", "PySide6.QtCharts",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtSql", "PySide6.QtTest",
     "tkinter", "unittest", "pydoc", "pytest", "numpy", "PIL",
     "pynput", "Xlib", "jeepney",
@@ -51,7 +45,7 @@ excludes = [
 a = Analysis(
     ["shortcutradio.py"],
     pathex=[],
-    binaries=[(MPV, ".")],
+    binaries=[],
     datas=[],
     hiddenimports=[],
     hookspath=[],
@@ -64,7 +58,9 @@ a = Analysis(
 # Qt Quick, QML and OpenGL, and the PDF image plugin, which brings Qt Pdf.
 # None of it is used by a widgets app, nor is the 20 MB software-OpenGL
 # fallback or Qt's own translations (no QTranslator is ever installed).
-UNUSED = re.compile(r"(qtvirtualkeyboardplugin|qpdf|opengl32sw"
+# The player runs on Qt's FFmpeg backend, so Windows Media Foundation's
+# backend plugin is never loaded either.
+UNUSED = re.compile(r"(qtvirtualkeyboardplugin|qpdf|opengl32sw|windowsmediaplugin"
                     r"|Qt6(Quick|Qml|Pdf|OpenGL|VirtualKeyboard)\w*)\.dll$"
                     r"|[\\/]translations[\\/]", re.I)
 a.binaries = [b for b in a.binaries if not UNUSED.search(b[0])]

@@ -3,8 +3,9 @@ contains the libraries below, each under its own licence. They are kept as
 separate files, so any of them can be replaced with another build.
 
   Qt 6 and PySide6    LGPL-3.0    https://www.qt.io/  https://code.qt.io/
-  python-mpv          LGPL-2.1+ (or GPL-2.0+, at your choice)
-                                  https://github.com/jaseg/python-mpv
+  FFmpeg (libavcodec and the rest)
+                      LGPL-2.1+, as built by Qt and shipped inside PySide6
+                                  https://ffmpeg.org/
   pynput              LGPL-3.0    https://github.com/moses-palmer/pynput
   python-xlib         LGPL-2.1+   https://github.com/python-xlib/python-xlib
   jeepney             MIT         https://gitlab.com/takluyver/jeepney
@@ -16,6 +17,3 @@ and available from that distribution.
 
 The texts of these licences are at https://www.gnu.org/licenses/ and on
 each project's page.
-
-mpv itself (libmpv) is not included. ShortCutRadio uses the one your system
-provides: on Mint, Ubuntu and Debian that is the libmpv2 package.

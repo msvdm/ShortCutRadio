@@ -10,8 +10,7 @@
 #   shortcutradio_<ver>_amd64.deb          the same app, installed to the
 #                                          system and the applications menu
 #
-# Both need the system's libmpv2 (see shortcutradio.spec for why it is not
-# bundled). The result runs on this machine's glibc or newer.
+# The result runs on this machine's glibc or newer.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

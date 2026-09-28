@@ -1,45 +1,27 @@
-"""The audio engine: libmpv in-process, wrapped as a QObject.
+"""The audio engine: Qt's own player (Qt Multimedia, FFmpeg inside), as a QObject.
 
-mpv does all the real work (network, decoding, reconnects, metadata); this
-class only knows which source is current and turns mpv's property changes into
-one `changed` signal carrying a full state snapshot. mpv calls its observers on
-its own thread; a Qt signal emitted there is queued onto the GUI thread, so
-receivers never touch mpv state concurrently.
+QMediaPlayer does the network, the decoding and the output; this class knows
+which source is current, walks a folder's tracks itself, and turns Qt's
+signals into one `changed` signal carrying a full state snapshot. Streams go
+through the relay (core/relay.py), which is where their song titles come
+from. Everything here runs on the GUI thread; the relay's reports arrive
+through a queued signal.
 """
 
 import os
-import sys
-import tempfile
-import threading
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 
-from .config import app_dir
-
-if sys.platform == "win32":
-    # Windows has no system libmpv, so the app brings libmpv-2.dll: a build
-    # keeps it with its other libraries (sys._MEIPASS, the _internal folder),
-    # a dev checkout next to shortcutradio.py. python-mpv's find_library()
-    # only walks %PATH%, so that folder goes first on it before mpv loads.
-    os.environ["PATH"] = (getattr(sys, "_MEIPASS", app_dir()) + os.pathsep
-                          + os.environ.get("PATH", ""))
-
-import mpv
-
+from .relay import Relay
 from .sources import folder_tracks, is_folder
 
 RETRY_MS = 5000
-VOLUME_MAX = 100        # mpv will amplify past this; nothing good comes of it
+VOLUME_MAX = 100        # louder would mean amplifying; nothing good comes of it
 
-# Ported from the NFSU2 radio's nfs-radio launcher: survive flaky networks.
-STREAM_OPTS = dict(
-    network_timeout=15,
-    cache=True,
-    demuxer_max_bytes="16MiB",
-    stream_lavf_o="reconnect=1,reconnect_streamed=1,"
-                  "reconnect_on_network_error=1,reconnect_delay_max=5",
-)
+_S = QMediaPlayer.MediaStatus
+READY = (_S.BufferingMedia, _S.BufferedMedia)       # the audio is running
 
 
 def _tag(meta, *keys):
@@ -53,13 +35,12 @@ def _tag(meta, *keys):
     return ""
 
 
-def now_playing(meta, media_title, path, kind):
+def now_playing(meta, path, kind):
     """The track line: what is playing right now, or "" if nothing useful.
 
-    Streams: the station's icy-title. Before the first metadata block mpv
-    reports the URL or its basename as media-title, which is noise, and HLS
-    streams never send any. Local files: "Artist – Title" from the tags,
-    falling back to the file name.
+    Streams: the station's title (ICY or an Ogg comment); HLS streams never
+    send one, and a station that sends its own address says nothing either.
+    Local files: "Artist – Title" from the tags, falling back to the file name.
     """
     if kind == "folder":
         artist, title = _tag(meta, "artist"), _tag(meta, "title")
@@ -69,12 +50,18 @@ def now_playing(meta, media_title, path, kind):
             return title
         return os.path.splitext(os.path.basename(path or ""))[0]
 
-    title = _tag(meta, "icy-title", "title") or (media_title or "").strip()
+    title = _tag(meta, "title")
     url = path or ""
     if (not title or title == url or title.startswith(("http://", "https://"))
             or title == url.rstrip("/").rsplit("/", 1)[-1]):
         return ""
     return title
+
+
+def volume_gain(volume):
+    """The output's linear gain for a 0-100 volume: cubic, as mpv's was, so
+    the 5 % steps sound even instead of all happening near the bottom."""
+    return (max(0, min(VOLUME_MAX, volume)) / 100) ** 3
 
 
 @dataclass(frozen=True)
@@ -86,7 +73,7 @@ class PlayerState:
     count: int = 0              # sources in the list
     name: str = ""
     kind: str | None = None     # "stream" | "folder" | None (no sources)
-    loaded: bool = False        # mpv has something open (playing or paused)
+    loaded: bool = False        # something is open (playing or paused)
     paused: bool = False
     connecting: bool = False    # opened, but no audio yet
     volume: int = 0
@@ -132,10 +119,15 @@ EMPTY_STATE = PlayerState()
 
 
 def make_state(props, index, source, count, error=""):
-    """The state from mpv's observed properties and the current source."""
+    """The state from the player's own facts and the current source.
+
+    props: loaded, paused, ready (Qt has the audio running), volume, meta
+    (a folder track's tags, or a stream's {"title"}), path, icy_url,
+    track_index and track_count (folders only).
+    """
     kind = source["kind"] if source else None
-    loaded = not props["idle-active"]
-    pos, total = props["playlist-pos"], props["playlist-count"] or 0
+    loaded = bool(props["loaded"])
+    pos, total = props["track_index"], props["track_count"] or 0
     folder = kind == "folder"
     return PlayerState(
         index=index,
@@ -143,14 +135,12 @@ def make_state(props, index, source, count, error=""):
         name=source["name"] if source else "",
         kind=kind,
         loaded=loaded,
-        paused=bool(props["pause"]),
-        connecting=loaded and bool(props["core-idle"]) and not props["pause"],
+        paused=bool(props["paused"]),
+        connecting=loaded and not props["ready"] and not props["paused"],
         volume=int(round(props["volume"] or 0)),
-        track=now_playing(props["metadata"], props["media-title"], props["path"], kind)
-        if loaded else "",
+        track=now_playing(props["meta"], props["path"], kind) if loaded else "",
         path=props["path"] if loaded else None,
-        # Most Icecast/SHOUTcast mounts announce their home page in icy-url.
-        icy_url=_tag(props["metadata"], "icy-url") if loaded else "",
+        icy_url=props["icy_url"] if loaded else "",
         track_pos=(pos + 1) if (folder and pos is not None and pos >= 0) else None,
         track_count=total if folder else None,
         error=error,
@@ -159,60 +149,97 @@ def make_state(props, index, source, count, error=""):
 
 class Player(QObject):
     changed = Signal(object)        # PlayerState
-    _stream_ended = Signal()
+    _relayed = Signal(int, str, str)    # token, "title" | "icy_url", value
 
     def __init__(self, sources, current=0, volume=70):
         super().__init__()
-        volume = max(0, min(VOLUME_MAX, volume))        # an older config may be louder
         self.sources = sources          # the config's list, shared by reference
         self._select(current if 0 <= current < len(sources) else 0)
         self.error = ""
-        self._lock = threading.Lock()
-        self._props = {"metadata": None, "media-title": None, "path": None,
-                       "pause": False, "volume": volume, "playlist-pos": None,
-                       "playlist-count": 0, "core-idle": True, "idle-active": True}
-        self._playlist_file = os.path.join(tempfile.gettempdir(),
-                                           f"shortcutradio-{os.getpid()}.m3u")
+        self._volume = max(0, min(VOLUME_MAX, volume))  # an older config may be louder
+        self._loaded = False
+        self._paused = False
+        self._tracks = []               # a folder's files, in play order
+        self._pos = -1
+        self._failed = 0                # folder tracks that would not play, in a row
+        self._meta = {}
+        self._icy_url = ""
+        self._token = 0                 # the relay session that is ours
 
-        self.mpv = mpv.MPV(
-            video=False, ytdl=False, idle=True, terminal=False,
-            input_default_bindings=False, input_vo_keyboard=False,
-            volume=volume, volume_max=VOLUME_MAX, audio_client_name="ShortCutRadio",
-            msg_level="all=warn", **STREAM_OPTS)
+        self.out = QAudioOutput(self)
+        self.out.setVolume(volume_gain(self._volume))
+        self.qt = QMediaPlayer(self)
+        self.qt.setAudioOutput(self.out)
+        self.qt.mediaStatusChanged.connect(self._on_status)
+        self.qt.playbackStateChanged.connect(self._emit)
+        self.qt.errorOccurred.connect(self._on_error)
+        self.qt.metaDataChanged.connect(self._on_tags)
 
-        for name in self._props:
-            self.mpv.observe_property(name, self._on_prop)
-        self.mpv.event_callback("end-file")(self._on_end_file)
+        self.relay = Relay(self._relayed.emit)
+        self._relayed.connect(self._on_relayed)
 
         self._retry = QTimer(self, singleShot=True, interval=RETRY_MS)
         self._retry.timeout.connect(self._retry_stream)
-        self._stream_ended.connect(self._retry.start)
 
-    # ---------------------------------------------------------------- mpv side
-    def _on_prop(self, name, value):
-        with self._lock:
-            self._props[name] = value
-            if name == "core-idle" and value is False:
-                self.error = ""
+    # ---------------------------------------------------------------- Qt side
+    def _on_status(self, status):
+        if (status == _S.EndOfMedia and self._loaded
+                and self.qt.mediaStatus() == _S.EndOfMedia):     # not a stale one
+            src = self.current_source()
+            if src is not None and is_folder(src):
+                self._failed = 0
+                self._step(1)           # folders loop
+                return
+            if src is not None:
+                self._stream_ended("Reconnecting…")
+                return
+        if status in READY:
+            self._failed = 0
         self._emit()
 
-    def _on_end_file(self, event):
-        reason = event.data.reason
-        if reason not in (mpv.MpvEventEndFile.EOF, mpv.MpvEventEndFile.ERROR):
-            return          # replaced by a station change, or quitting
+    def _on_error(self, *_):
+        if self.qt.error() == QMediaPlayer.Error.NoError or not self._loaded:
+            return          # stale: the source was replaced or stopped since
         src = self.current_source()
-        if src is None or is_folder(src):
-            return          # folders loop; a track ending is normal
-        with self._lock:
-            self.error = "Reconnecting…" if reason == mpv.MpvEventEndFile.EOF \
-                else "Can't reach this stream – retrying…"
+        if src is not None and is_folder(src):
+            # A file that won't play is skipped, unless none of them will.
+            self._failed += 1
+            if self._failed < len(self._tracks):
+                self._step(1)
+            else:
+                self._halt("Can't play the files in this folder")
+            return
+        self._stream_ended("Can't reach this stream – retrying…")
+
+    def _stream_ended(self, message):
+        self._halt(message)
+        self._retry.start()
+
+    def _on_tags(self):
+        src = self.current_source()
+        if src is None or not is_folder(src):
+            return          # a stream's title comes from the relay
+        m = self.qt.metaData()
+        self._meta = {
+            "title": m.stringValue(QMediaMetaData.Key.Title),
+            "artist": m.stringValue(QMediaMetaData.Key.ContributingArtist)
+            or m.stringValue(QMediaMetaData.Key.AlbumArtist),
+        }
         self._emit()
-        self._stream_ended.emit()
+
+    def _on_relayed(self, token, key, value):
+        if token != self._token:
+            return          # the station before this one, still hanging up
+        if key == "title":
+            self._meta = {"title": value}
+        elif key == "icy_url":
+            self._icy_url = value
+        self._emit()
 
     def _retry_stream(self):
         src = self.current_source()
         if src and not is_folder(src) and not self.loaded():
-            self._tune(paused=bool(self.mpv.pause))
+            self._tune(paused=self._paused)
 
     # ---------------------------------------------------------------- state
     def _select(self, index):
@@ -227,51 +254,84 @@ class Player(QObject):
         return None
 
     def loaded(self):
-        # Ask mpv, not the observed copy: that one can lag a second behind a
-        # stop, and Next right after Stop would then start playing.
-        return not self.mpv.idle_active
+        return self._loaded
 
     def snapshot(self):
-        with self._lock:
-            props = dict(self._props)
-            error = self.error
-        return make_state(props, self.index, self.current_source(),
-                          len(self.sources), error)
+        src = self.current_source()
+        folder = src is not None and is_folder(src)
+        if folder:
+            path = self._tracks[self._pos] if 0 <= self._pos < len(self._tracks) else None
+        else:
+            path = src["target"] if src else None
+        props = {
+            "loaded": self._loaded, "paused": self._paused,
+            # A local file opens in a blink: only a stall counts as waiting.
+            "ready": (self.qt.mediaStatus() != _S.StalledMedia if folder
+                      else self.qt.mediaStatus() in READY),
+            "volume": self._volume,
+            "meta": self._meta, "path": path, "icy_url": self._icy_url,
+            "track_index": self._pos if folder else None,
+            "track_count": len(self._tracks) if folder else 0,
+        }
+        return make_state(props, self.index, src, len(self.sources), self.error)
 
-    def _emit(self):
+    def _emit(self, *_):
         self.changed.emit(self.snapshot())
 
     # ---------------------------------------------------------------- commands
+    def _halt(self, error=""):
+        """Nothing open any more; `error` says why, if it wasn't asked for."""
+        self._retry.stop()
+        self._loaded = False
+        self.error = error          # before Qt's own signals report the stop
+        self._token = 0
+        self.relay.close()
+        self.qt.stop()
+        self.qt.setSource(QUrl())
+        self._emit()
+
+    def _open(self, url):
+        """Load `url` into Qt with the play state already decided: pause is
+        set before loading, or the new source is heard for a moment."""
+        self._meta = {}
+        self.qt.setSource(url)
+        if self._paused:
+            self.qt.pause()
+        else:
+            self.qt.play()
+
     def _tune(self, paused=False):
         src = self.current_source()
         self._retry.stop()
-        with self._lock:
-            self.error = ""
-            # Don't show the old source's track under the new source's name
-            # while mpv is still opening it.
-            self._props.update({"metadata": None, "media-title": None, "path": None})
+        self.error = ""
+        self._paused = paused
+        self._icy_url = ""
+        self._tracks, self._pos, self._failed = [], -1, 0
         if src is None:
-            self.mpv.command("stop")
-            self._emit()
+            self._halt()
             return
         if is_folder(src):
-            tracks = folder_tracks(src["target"], src.get("shuffle", False))
-            if not tracks:
-                self.mpv.command("stop")
-                with self._lock:
-                    self.error = "No audio files in this folder"
-                self._emit()
+            self._token = 0
+            self.relay.close()
+            self._tracks = folder_tracks(src["target"], src.get("shuffle", False))
+            if not self._tracks:
+                self._halt("No audio files in this folder")
                 return
-            with open(self._playlist_file, "w", encoding="utf-8") as fh:
-                fh.write("#EXTM3U\n" + "\n".join(tracks) + "\n")
-            # Set pause before loading, or the new source is heard starting.
-            self.mpv.pause = paused
-            self.mpv.loop_playlist = "inf"
-            self.mpv.loadlist(self._playlist_file, "replace")
+            self._pos = 0
+            self._loaded = True
+            self._open(QUrl.fromLocalFile(self._tracks[0]))
         else:
-            self.mpv.pause = paused
-            self.mpv.loop_playlist = "no"
-            self.mpv.loadfile(src["target"], "replace")
+            self._token, local = self.relay.open(src["target"])
+            self._loaded = True
+            self._open(QUrl(local))
+        self._emit()
+
+    def _step(self, delta):
+        """Another track of the folder, wrapping round at either end."""
+        if not self._tracks:
+            return
+        self._pos = (self._pos + delta) % len(self._tracks)
+        self._open(QUrl.fromLocalFile(self._tracks[self._pos]))
         self._emit()
 
     def play_source(self, index):
@@ -291,11 +351,10 @@ class Player(QObject):
             return
         self._select(index % len(self.sources))
         if self.loaded() or self._retry.isActive():
-            self._tune(paused=bool(self.mpv.pause))
+            self._tune(paused=self._paused)
         else:
             self._retry.stop()
-            with self._lock:
-                self.error = ""
+            self.error = ""
             self._emit()
 
     def next_source(self):
@@ -307,28 +366,34 @@ class Player(QObject):
     def next_track(self):
         src = self.current_source()
         if src and is_folder(src) and self.loaded():
-            self.mpv.playlist_next("force")
+            self._step(1)
 
     def prev_track(self):
         src = self.current_source()
         if src and is_folder(src) and self.loaded():
-            self.mpv.playlist_prev("force")
+            self._step(-1)
 
     def toggle(self):
         if not self.loaded():
             self._tune()        # nothing playing yet: start the current source
+            return
+        self._paused = not self._paused
+        if self._paused:
+            self.qt.pause()
         else:
-            self.mpv.pause = not self.mpv.pause
+            self.qt.play()
+        self._emit()
 
     def stop(self):
-        self._retry.stop()
-        self.mpv.command("stop")
+        self._halt()
 
     def set_volume(self, value):
-        self.mpv.volume = max(0, min(VOLUME_MAX, value))
+        self._volume = max(0, min(VOLUME_MAX, int(round(value))))
+        self.out.setVolume(volume_gain(self._volume))
+        self._emit()
 
     def change_volume(self, delta):
-        self.set_volume((self.mpv.volume or 0) + delta)
+        self.set_volume(self._volume + delta)
 
     def sources_changed(self):
         """The list was edited. Keep pointing at the same source if it survived.
@@ -349,10 +414,5 @@ class Player(QObject):
 
     def shutdown(self):
         self._retry.stop()
-        try:
-            self.mpv.terminate()
-        finally:
-            try:
-                os.remove(self._playlist_file)
-            except OSError:
-                pass
+        self.relay.shutdown()
+        self.qt.stop()
