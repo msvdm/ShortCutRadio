@@ -280,6 +280,9 @@ QMenu::item:selected {{ background: {t['menu_hover']}; }}
 QMenu::item:disabled {{ color: {t['disabled']}; }}
 QMenu::separator {{ height: 1px; background: {t['menu_sep']}; margin: 5px 2px; }}
 
+/* Linux desktops ask for icons on OK/Cancel; the skin has none. */
+QDialogButtonBox {{ dialogbuttonbox-buttons-have-icons: 0; }}
+
 /* ------------------------------------------------------------ tray menu */
 #trayHeader {{ background: {t['menu_hover']}; border-radius: 7px; }}
 #trayName {{ font-size: 13px; font-weight: 600; color: {t['text']}; }}

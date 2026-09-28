@@ -460,6 +460,12 @@ The README still tells other people to make a venv: that is their machine.
 - **A custom QWidget subclass ignores a stylesheet background** unless it sets
   `WA_StyledBackground`. The tray's now-playing header rendered on the menu's
   background until it did.
+- **Linux puts icons on OK/Cancel; Windows doesn't.** Fusion asks the
+  platform theme, and Mint's says yes: the popups built on Windows showed
+  a red icon on Cancel here. The stylesheet turns it off for every
+  `QDialogButtonBox` (`dialogbuttonbox-buttons-have-icons`). Likewise any
+  QMenu we pop needs the tray's frameless + translucent pair, or its round
+  corners sit on a white square (the Sources right-click menu did).
 - **QSS font-size beats `setFont`.** Anything given a monospace face in code
   (key caps, the status line, the spin boxes) must have its size pinned in the
   stylesheet too, or the class rule overrides it. The family survives, because

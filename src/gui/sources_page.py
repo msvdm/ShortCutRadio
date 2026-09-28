@@ -266,6 +266,9 @@ class SourcesPage(QWidget):
         src = srcs[row]         # the real source; the item only holds a copy
         edit = self.app.edit_source
         m = QMenu(self)
+        # Rounded corners need a see-through window behind them (as the tray's).
+        m.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        m.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         m.addAction("Play", lambda: self.app.player.play_source(row))
         m.addAction("Rename…", lambda: self.rename(src))
         m.addAction("Shortcut…", lambda: self.set_shortcut(src))
