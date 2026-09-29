@@ -4,7 +4,7 @@
 
 <img src="docs/window.png" alt="The ShortCutRadio window: what's playing on top, the list of stations below" width="640">
 
-Hi, :) 
+Hi, :)  
 I am a sound guy first, geek second and a software engineer never.
 Everything in this repo is written by Opus 5.5. I just tested and prompted until i liked it.
 If that is a hard stop for you - do not waste your time reading the rest.
