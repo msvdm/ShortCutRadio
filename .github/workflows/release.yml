@@ -1,0 +1,99 @@
+# The downloads, built by the same scripts as on the author's machines.
+# A tag v<version> builds and publishes a release; running it by hand
+# (workflow_dispatch) builds and keeps the files as artifacts only, a dry run.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          VERSION=$(python3 -c "from src import __version__; print(__version__)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "the tag is $GITHUB_REF_NAME but the app says $VERSION" >&2
+            exit 1
+          fi
+
+  # The oldest Ubuntu the release supports: the .deb and the tarball run on
+  # its glibc (2.35) or newer, and build-deb.sh reads the floor from the build.
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # PyInstaller copies the PulseAudio client from here, so libpulse0 first.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libdbus-1-3 libfontconfig1 libpulse0 dpkg-dev binutils
+      - run: python -m pip install -r requirements.txt
+      - run: packaging/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
+          }
+          Write-Host "Inno Setup: $($iscc.FullName)"
+          Add-Content $env:GITHUB_PATH $iscc.DirectoryName
+      - run: python -m pip install -r requirements.txt
+      - run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, linux, windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+            --title "ShortCutRadio ${{ needs.version.outputs.version }}" \
+            --notes-file packaging/release-notes.md

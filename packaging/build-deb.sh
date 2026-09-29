@@ -49,8 +49,21 @@ EOF
 chmod -R go-w "$STAGE"
 chmod 755 "$STAGE"
 
+# The glibc the package needs is what the built folder asks for: the highest
+# GLIBC_x.y any of its files names. The build machine sets it (2.39 on the
+# author's Mint, 2.35 on the release runner), so it is read, not written
+# down. Without objdump, this machine's own glibc: never too low.
+GLIBC=$( { find "$FOLDER" -type f -exec objdump -T {} + 2>/dev/null || true; } \
+         | { grep -o 'GLIBC_[0-9][0-9.]*' || true; } | cut -d_ -f2 | sort -uV | tail -n1)
+if [ -z "$GLIBC" ]; then
+    GLIBC=$(ldd --version | head -n1 | grep -o '[0-9][0-9.]*$')
+    echo "no objdump: glibc floor from this machine, $GLIBC"
+fi
+echo "needs glibc >= $GLIBC"
+
 mkdir -p "$STAGE/DEBIAN"
-sed "s/@VERSION@/$VERSION/" "$ROOT/packaging/debian/control.in" > "$STAGE/DEBIAN/control"
+sed -e "s/@VERSION@/$VERSION/" -e "s/@GLIBC@/$GLIBC/" \
+    "$ROOT/packaging/debian/control.in" > "$STAGE/DEBIAN/control"
 
 mkdir -p "$OUTDIR"
 DEB="$OUTDIR/shortcutradio_${VERSION}_amd64.deb"

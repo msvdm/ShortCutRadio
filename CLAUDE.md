@@ -71,7 +71,9 @@ shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/
 shortcutradio-windows.spec  the same on Windows
 packaging/                build.sh (tests, build, tarball, .deb), build-deb.sh, .desktop;
                           build.ps1 (tests, build, zip, installer), shortcutradio.iss
-                          (Inno Setup), make_ico.py, THIRD_PARTY(-windows).txt
+                          (Inno Setup), make_ico.py, THIRD_PARTY(-windows).txt,
+                          release-notes.md (the text of every GitHub release)
+.github/workflows/        ci.yml (the tests, every push), release.yml (a v* tag -> release)
 ```
 
 Stack: Python 3.12, PySide6 (Qt Multimedia and its FFmpeg are the player), pynput,
@@ -86,6 +88,8 @@ true` and packages land in `~/.local` (never `sudo pip`); installed without
 `--upgrade`, pip keeps the apt copies Mint's own tools use (python-xlib,
 six, packaging). On Windows it is the per-user 3.13 on PATH, as `python`.
 The README still tells other people to make a venv: that is their machine.
+The GitHub runners aren't the author's machines either, so the workflows
+use `actions/setup-python` there.
 
 ## Decisions — do not re-litigate
 
@@ -713,11 +717,29 @@ The README still tells other people to make a venv: that is their machine.
   it (`unins000.exe /VERYSILENT`) while it runs; the folder must be gone
   and the settings kept.
 
+### CI and releases
+
+- **CI** (`.github/workflows/ci.yml`) runs the tests on every push and pull
+  request: Ubuntu 22.04 with Python 3.12, Windows with 3.13, Qt offscreen.
+  `gh run watch` after a push; a red run is fixed before anything else.
+- **A release is built by GitHub, not here** (`release.yml`): on a `v*` tag
+  it runs `packaging/build.sh` on Ubuntu 22.04 and `packaging\build.ps1` on
+  Windows, unchanged, and publishes the four files with
+  `packaging/release-notes.md`. The tag must be `v` + `__version__` or it
+  stops. To release: bump `src/__init__.py`, commit, push, CI green, then
+  `git tag v<version>` and `git push origin v<version>`. Running the
+  workflow by hand (`gh workflow run release.yml`) builds without
+  publishing -- a dry run; `gh run download` fetches its files.
+- **The .deb's glibc floor is read from the build** (`build-deb.sh`: the
+  highest `GLIBC_x.y` that `objdump -T` finds in the folder), not written
+  down: it was a literal 2.39, this Mint's, which kept the package off any
+  older system even when built on one. The release builds on Ubuntu 22.04,
+  so the floor is 2.35 there; a build here says 2.38. No objdump: this
+  machine's own glibc, which is never too low.
+
 ## Not done yet
 
-A GitHub Actions release (build on the oldest supported Ubuntu, so the
-glibc floor drops below this machine's 2.39, and on a Windows runner with
-build.ps1), signing the Windows installer, game hooks
+Signing the Windows installer, game hooks
 (e.g. NFSU2 world-load autostart, in the style of the old radio's
 `/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
 and key suppression (pynput `darwin_intercept`), and confirming the overlay

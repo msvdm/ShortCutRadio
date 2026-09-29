@@ -10,7 +10,8 @@
 #   shortcutradio_<ver>_amd64.deb          the same app, installed to the
 #                                          system and the applications menu
 #
-# The result runs on this machine's glibc or newer.
+# The result runs on this machine's glibc or newer: build on the oldest
+# system it should run on (the release workflow builds on Ubuntu 22.04).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
