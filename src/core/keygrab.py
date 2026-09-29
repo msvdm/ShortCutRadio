@@ -38,6 +38,16 @@ if sys.platform != "win32":     # Windows has its own hook (keygrab_win.py)
     except Exception as e:      # no X display, unsupported platform ...
         IMPORT_ERROR = str(e)
 
+WAYLAND_ERROR = ("this is a Wayland session, and global shortcuts need X11. "
+                 "Choose the Xorg (X11) session on the login screen.")
+
+
+def wayland_session():
+    """Under Wayland pynput still starts, through XWayland, but hears only
+    X apps' keys, and nothing can be grabbed: half-dead shortcuts."""
+    kind = os.environ.get("XDG_SESSION_TYPE", "")
+    return kind == "wayland" or (bool(os.environ.get("WAYLAND_DISPLAY")) and kind != "x11")
+
 MOD_NAMES = {
     "ctrl": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
     "alt": "alt", "alt_l": "alt", "alt_r": "alt",
@@ -124,14 +134,14 @@ class XKeys:
         # (see keysym_for). Learned from every press, kept in the config.
         self.keysyms = {} if keysyms is None else keysyms
         self.grabber = KeyGrabber(on_ungrabbed)
-        self.error = IMPORT_ERROR
+        self.error = WAYLAND_ERROR if wayland_session() else IMPORT_ERROR
         self._combos = []
         self._listener = None
         self._mods = set()
         self._down = {}         # key name -> when it was last pressed
 
     def start(self):
-        if keyboard is None:
+        if keyboard is None or self.error:
             return False
         try:
             self._listener = keyboard.Listener(on_press=_safe(self._press),
@@ -216,7 +226,7 @@ class KeyGrabber:
         self._err = None
         self.available = (xdisplay is not None and sys.platform.startswith("linux")
                           and bool(os.environ.get("DISPLAY"))
-                          and os.environ.get("XDG_SESSION_TYPE") != "wayland")
+                          and not wayland_session())
         self._ops = queue.Queue()
         self._grabbed = set()       # (keycode, modmask)
         self._thread = None

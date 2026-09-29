@@ -578,6 +578,10 @@ The README still tells other people to make a venv: that is their machine.
   release on purpose; the next real press resets it, and the listener always
   sees that press before the desktop's call arrives (measured).
 - **Wayland is not supported** (pynput and X grabs are X11-only). Mint is X11 today.
+  It used to fail quietly: the grabs were skipped, but pynput still started
+  under XWayland and heard only X apps' keys. Now `XKeys` doesn't start
+  there (`keygrab.wayland_session`) and says why in `error`, which the
+  Shortcuts tab and the source Shortcut popup show and the log records.
 - **A low-level hook has no repeat flag.** Bit 30 ("previous key state")
   is in WM_KEYDOWN's lParam, not in KBDLLHOOKSTRUCT. But every release does
   reach the hook, so a press with no release since is a repeat -- exact,

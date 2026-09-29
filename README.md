@@ -114,8 +114,11 @@ ShortCutRadio and nothing else. ShortCutRadio also shows up in the volume menu a
 
 It works well on Linux (X11) and I use it every day. Windows is new: it
 works, but the overlay hasn't been tried over a fullscreen game there yet.
-macOS is next. Wayland isn't
-supported, because the global shortcuts need X11.
+macOS is next.
+
+On Linux with Wayland the player works but the shortcuts don't: they need
+X11. Choose the Xorg (X11) session on the login screen, usually under a
+small gear or menu next to your name.
 
 ## Who wrote this
 

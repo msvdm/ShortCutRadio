@@ -359,3 +359,13 @@ def test_a_new_recording_gives_up_the_one_before(monkeypatch):
     key("ctrl")
     key("e")
     assert popup == ["ctrl+e"] and tab == ["esc"]
+
+
+def test_wayland_says_so(monkeypatch):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    xk = XKeys(lambda *a: None)
+    assert "Wayland" in xk.error and "X11" in xk.error
+    assert xk.start() is False and xk._listener is None
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")    # the session type decides
+    assert "Wayland" not in XKeys(lambda *a: None).error
