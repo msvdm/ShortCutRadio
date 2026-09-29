@@ -49,7 +49,7 @@ turn the volume up from the keyboard. Press the key again and it's gone.
 1. **Sources** tab: add internet stations (**Add Stream**) or music folders
    (**Add Folder**).
 2. **Shortcuts** tab: pick your keys. 
-Only the Overlay onn/off one needs a complicated 3 keys shortcut to avoid
+Only the Overlay on/off one needs a complicated 3 keys shortcut to avoid
 duplication with the system. It's not ok to be Ctrl+C if you want it work correctly :)
 The rest of the shortcuts can be simple and single keys, like the defaults:
  `[` `]` for volume, `;` `'` for the previous or next station, `\` to play or pause.
