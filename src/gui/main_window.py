@@ -117,12 +117,12 @@ class Hero(QWidget):
         lay.addLayout(right)
         lay.addStretch(1)
 
-    def set_now_playing(self, s, art, tile):
+    def set_now_playing(self, s, art):
         status, name, track = self._lines(s)
         self.status.setText(status)
         self.name.setText(name)
         self.track.setText(track)
-        self.art.set_art(art, tile)
+        self.art.set_art(art, s.tile)
         self.play.set_playing(s.playing)
         self.track_next.setEnabled(s.can_skip_track)
         if not self.volume.isSliderDown():
@@ -222,8 +222,8 @@ class MainWindow(FramelessWindow):
             if p.strip_widget is not None:
                 p.strip_widget.setVisible(i == n)
 
-    def set_now_playing(self, s, art=None, tile=""):
-        self.hero.set_now_playing(s, art, tile)
+    def set_now_playing(self, s, art=None):
+        self.hero.set_now_playing(s, art)
         self.sources.set_now_playing(s)
 
     def apply_theme(self):

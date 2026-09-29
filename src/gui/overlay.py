@@ -89,7 +89,6 @@ class Overlay(QWidget):
         self.lines = ("", "")
         self._tick = 0
         self._art = FittedArt(dark=True)
-        self.tile = ""              # what the generated art says, from the address
 
         self.meter = Meter(BARS, self)
         self.meter.tick.connect(self.update)
@@ -117,10 +116,9 @@ class Overlay(QWidget):
         self.small_font = make_font(family, c["text_style"], c["track_size"], bold=False)
 
     # ------------------------------------------------------------------ state
-    def set_now_playing(self, state, art=None, tile=""):
+    def set_now_playing(self, state, art=None):
         old = self.state
         self.state = state
-        self.tile = tile
         self.set_art(art)
         if old is not EMPTY_STATE and old.volume != state.volume and state.loaded:
             self.show_flash(f"Volume {state.volume}%")
@@ -296,7 +294,7 @@ class Overlay(QWidget):
         if art:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             draw_art(p, QRectF(PAD_X, (self.height() - art) / 2, art, art),
-                     ART_RADIUS, self._art.pixmap, self.tile, dark=True)
+                     ART_RADIUS, self._art.pixmap, self.state.tile, dark=True)
         if self.state.audible:
             draw_level_bars(p, self.width() - PAD_X, self.height() / 2 + BAR_HIGH / 2,
                             self.meter.values, BAR_COLOR, BAR_W, BAR_GAP,

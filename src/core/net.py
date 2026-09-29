@@ -10,9 +10,20 @@ import json
 import urllib.parse
 import urllib.request
 
+from .. import __version__
+
+# Station *pages* answer a browser the way they would answer a person.
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+# Everywhere posing as a browser does harm, ShortCutRadio says who it is:
+# StreamTheWorld cuts a browser off a *stream* after 32 KB (two seconds, then
+# silence) -- mpv always said "mpv" -- and radio-browser asks apps to name
+# themselves.
+APP_UA = f"ShortCutRadio/{__version__}"
 TIMEOUT = 8
+PAGE_MAX = 3 * 1024 * 1024
 NET_ERRORS = (OSError, ValueError, http.client.HTTPException)
+# Headers only a stream sends; a page carrying one is a stream in disguise.
+ICY_HEADERS = ("icy-name", "icy-metaint", "icy-br")
 
 
 def open_url(url, extra=None):
@@ -20,6 +31,34 @@ def open_url(url, extra=None):
     headers.update(extra or {})
     req = urllib.request.Request(url, headers=headers)
     return urllib.request.urlopen(req, timeout=TIMEOUT)
+
+
+def is_page(ctype):
+    """A content type worth reading as text: a page, a script, JSON -- or none."""
+    return not ctype or ctype.startswith("text/") or "javascript" in ctype or "json" in ctype
+
+
+def read_text(resp, head=b"", limit=PAGE_MAX):
+    """The rest of a response, after the `head` already read, as text in the
+    charset it declares. Cut short, not failed, when the connection drops."""
+    try:
+        body = head + resp.read(limit)
+    except NET_ERRORS:
+        body = head
+    return body.decode(resp.headers.get_content_charset() or "utf-8", "replace")
+
+
+def read_page(url):
+    """(text, final url) of a web page or a script, or None -- also for an
+    address that answers with audio instead."""
+    try:
+        with open_url(url) as resp:
+            ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            if not is_page(ctype) or any(h in resp.headers for h in ICY_HEADERS):
+                return None
+            return read_text(resp), resp.geturl()
+    except NET_ERRORS:
+        return None
 
 
 def clean_site(url):

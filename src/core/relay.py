@@ -22,13 +22,7 @@ import socket
 import struct
 import threading
 
-from .. import __version__
-from .net import NET_ERRORS, open_url
-
-# The relay says who it is. net.UA poses as Chrome so station *pages* answer
-# like they would a browser, but StreamTheWorld cuts a browser off a *stream*
-# after 32 KB (two seconds, then silence) -- mpv always said "mpv".
-UA = f"ShortCutRadio/{__version__}"
+from .net import APP_UA, NET_ERRORS, open_url
 
 
 class IcyStripper:
@@ -231,7 +225,8 @@ class Relay:
                     conn.sendall(b"HTTP/1.0 404 Not Found\r\n\r\n")
                     return
                 try:
-                    resp = open_url(live[1], {"User-Agent": UA})
+                    # Never as a browser: see net.APP_UA.
+                    resp = open_url(live[1], {"User-Agent": APP_UA})
                 except NET_ERRORS:
                     conn.sendall(b"HTTP/1.0 502 Bad Gateway\r\n\r\n")
                     return

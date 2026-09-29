@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
 
 from .relay import Relay
-from .sources import folder_tracks, is_folder
+from .sources import art_label, folder_tracks, is_folder
 
 RETRY_MS = 5000
 VOLUME_MAX = 100        # louder would mean amplifying; nothing good comes of it
@@ -72,6 +72,7 @@ class PlayerState:
     index: int = 0
     count: int = 0              # sources in the list
     name: str = ""
+    tile: str = ""              # what the art says without a picture: from the address
     kind: str | None = None     # "stream" | "folder" | None (no sources)
     loaded: bool = False        # something is open (playing or paused)
     paused: bool = False
@@ -118,31 +119,33 @@ class PlayerState:
 EMPTY_STATE = PlayerState()
 
 
-def make_state(props, index, source, count, error=""):
-    """The state from the player's own facts and the current source.
+def make_state(source, index, count, *, loaded=False, paused=False, ready=False,
+               volume=0, meta=None, path=None, icy_url="", track_index=None,
+               track_count=0, error=""):
+    """The state from the current source and the player's own facts.
 
-    props: loaded, paused, ready (Qt has the audio running), volume, meta
-    (a folder track's tags, or a stream's {"title"}), path, icy_url,
-    track_index and track_count (folders only).
+    ready: Qt has the audio running. meta: a folder track's tags, or a
+    stream's {"title"}. path: the file or the stream that is open.
+    track_index and track_count: folders only.
     """
     kind = source["kind"] if source else None
-    loaded = bool(props["loaded"])
-    pos, total = props["track_index"], props["track_count"] or 0
     folder = kind == "folder"
     return PlayerState(
         index=index,
         count=count,
         name=source["name"] if source else "",
+        tile=art_label(source),
         kind=kind,
         loaded=loaded,
-        paused=bool(props["paused"]),
-        connecting=loaded and not props["ready"] and not props["paused"],
-        volume=int(round(props["volume"] or 0)),
-        track=now_playing(props["meta"], props["path"], kind) if loaded else "",
-        path=props["path"] if loaded else None,
-        icy_url=props["icy_url"] if loaded else "",
-        track_pos=(pos + 1) if (folder and pos is not None and pos >= 0) else None,
-        track_count=total if folder else None,
+        paused=paused,
+        connecting=loaded and not ready and not paused,
+        volume=int(round(volume)),
+        track=now_playing(meta, path, kind) if loaded else "",
+        path=path if loaded else None,
+        icy_url=icy_url if loaded else "",
+        track_pos=(track_index + 1) if (folder and track_index is not None
+                                        and track_index >= 0) else None,
+        track_count=track_count if folder else None,
         error=error,
     )
 
@@ -185,14 +188,12 @@ class Player(QObject):
     def _on_status(self, status):
         if (status == _S.EndOfMedia and self._loaded
                 and self.qt.mediaStatus() == _S.EndOfMedia):     # not a stale one
-            src = self.current_source()
-            if src is not None and is_folder(src):
+            if self._folder:
                 self._failed = 0
                 self._step(1)           # folders loop
-                return
-            if src is not None:
+            else:
                 self._stream_ended("Reconnecting…")
-                return
+            return
         if status in READY:
             self._failed = 0
         self._emit()
@@ -200,8 +201,7 @@ class Player(QObject):
     def _on_error(self, *_):
         if self.qt.error() == QMediaPlayer.Error.NoError or not self._loaded:
             return          # stale: the source was replaced or stopped since
-        src = self.current_source()
-        if src is not None and is_folder(src):
+        if self._folder:
             # A file that won't play is skipped, unless none of them will.
             self._failed += 1
             if self._failed < len(self._tracks):
@@ -216,8 +216,7 @@ class Player(QObject):
         self._retry.start()
 
     def _on_tags(self):
-        src = self.current_source()
-        if src is None or not is_folder(src):
+        if not self._folder:
             return          # a stream's title comes from the relay
         m = self.qt.metaData()
         self._meta = {
@@ -237,8 +236,7 @@ class Player(QObject):
         self._emit()
 
     def _retry_stream(self):
-        src = self.current_source()
-        if src and not is_folder(src) and not self.loaded():
+        if self.current_source() is not None and not self._folder and not self._loaded:
             self._tune(paused=self._paused)
 
     # ---------------------------------------------------------------- state
@@ -253,27 +251,30 @@ class Player(QObject):
             return self.sources[self.index]
         return None
 
-    def loaded(self):
-        return self._loaded
+    @property
+    def _folder(self):
+        """The current source is a folder -- else a stream, or nothing at all."""
+        src = self.current_source()
+        return src is not None and is_folder(src)
 
     def snapshot(self):
         src = self.current_source()
-        folder = src is not None and is_folder(src)
+        folder = self._folder
         if folder:
             path = self._tracks[self._pos] if 0 <= self._pos < len(self._tracks) else None
         else:
             path = src["target"] if src else None
-        props = {
-            "loaded": self._loaded, "paused": self._paused,
+        status = self.qt.mediaStatus()
+        return make_state(
+            src, self.index, len(self.sources),
+            loaded=self._loaded, paused=self._paused,
             # A local file opens in a blink: only a stall counts as waiting.
-            "ready": (self.qt.mediaStatus() != _S.StalledMedia if folder
-                      else self.qt.mediaStatus() in READY),
-            "volume": self._volume,
-            "meta": self._meta, "path": path, "icy_url": self._icy_url,
-            "track_index": self._pos if folder else None,
-            "track_count": len(self._tracks) if folder else 0,
-        }
-        return make_state(props, self.index, src, len(self.sources), self.error)
+            ready=status != _S.StalledMedia if folder else status in READY,
+            volume=self._volume, meta=self._meta, path=path, icy_url=self._icy_url,
+            track_index=self._pos if folder else None,
+            track_count=len(self._tracks) if folder else 0,
+            error=self.error,
+        )
 
     def _emit(self, *_):
         self.changed.emit(self.snapshot())
@@ -284,11 +285,15 @@ class Player(QObject):
         self._retry.stop()
         self._loaded = False
         self.error = error          # before Qt's own signals report the stop
-        self._token = 0
-        self.relay.close()
+        self._drop_stream()
         self.qt.stop()
         self.qt.setSource(QUrl())
         self._emit()
+
+    def _drop_stream(self):
+        """Let the relay go; a late report from it no longer counts."""
+        self._token = 0
+        self.relay.close()
 
     def _open(self, url):
         """Load `url` into Qt with the play state already decided: pause is
@@ -311,8 +316,7 @@ class Player(QObject):
             self._halt()
             return
         if is_folder(src):
-            self._token = 0
-            self.relay.close()
+            self._drop_stream()
             self._tracks = folder_tracks(src["target"], src.get("shuffle", False))
             if not self._tracks:
                 self._halt("No audio files in this folder")
@@ -350,7 +354,7 @@ class Player(QObject):
         if not self.sources:
             return
         self._select(index % len(self.sources))
-        if self.loaded() or self._retry.isActive():
+        if self._loaded or self._retry.isActive():
             self._tune(paused=self._paused)
         else:
             self._retry.stop()
@@ -364,17 +368,15 @@ class Player(QObject):
         self.select_source(self.index - 1)
 
     def next_track(self):
-        src = self.current_source()
-        if src and is_folder(src) and self.loaded():
+        if self._folder and self._loaded:
             self._step(1)
 
     def prev_track(self):
-        src = self.current_source()
-        if src and is_folder(src) and self.loaded():
+        if self._folder and self._loaded:
             self._step(-1)
 
     def toggle(self):
-        if not self.loaded():
+        if not self._loaded:
             self._tune()        # nothing playing yet: start the current source
             return
         self._paused = not self._paused
@@ -383,9 +385,6 @@ class Player(QObject):
         else:
             self.qt.play()
         self._emit()
-
-    def stop(self):
-        self._halt()
 
     def set_volume(self, value):
         self._volume = max(0, min(VOLUME_MAX, int(round(value))))
@@ -408,8 +407,9 @@ class Player(QObject):
             # The playing source was removed: stop rather than keep playing
             # something that is no longer in the list.
             self._select(min(self.index, max(0, len(self.sources) - 1)))
-            if self.loaded():
-                self.stop()
+            if self._loaded:
+                self._halt()        # which tells everyone
+                return
         self._emit()
 
     def shutdown(self):

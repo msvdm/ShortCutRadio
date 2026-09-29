@@ -9,7 +9,8 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from ..core.hotkeys import ALWAYS_LIVE, SUPER, has_modifier, pretty, works_everywhere
+from ..core.hotkeys import (ALWAYS_LIVE, SUPER, has_modifier, pretty, recorded,
+                            works_everywhere)
 from .dialogs import FramelessDialog, inform, wrapped_label
 from .widgets import PillSwitch, mono_font, repolish
 
@@ -60,10 +61,7 @@ SOURCE_TIP = "Right-click the source, then Shortcut…, to change it."
 # arrive just after the recording ended: Esc would then close the popup.
 CAPTURE_ECHO_S = 0.4
 SWITCH_W = 34 + 12     # the pill and its gap to the text
-# Every word-wrapped label needs a pinned wrapping width. Qt asks such a label
-# how tall it would be at its *minimum* width, and an unpinned one answers with
-# a dozen lines -- which the window then grows to fit and never gives back.
-WRAP_W = 560
+WRAP_W = 560           # the tab's text column, pinned: see dialogs.WRAP_W
 
 
 class KeyCap(QPushButton):
@@ -71,7 +69,8 @@ class KeyCap(QPushButton):
 
     Recording goes through the global listener (so what is recorded is exactly
     what will match), but Qt still delivers the same key to this button -- it
-    must be swallowed, or Space/Enter would re-click it.
+    must be swallowed, or Space/Enter would re-click it. The cap shows that it
+    is recording; what it shows otherwise is up to its owner.
     """
 
     def __init__(self):
@@ -87,6 +86,10 @@ class KeyCap(QPushButton):
         if self.capturing and not on:
             self._ended = time.monotonic()
         self.capturing = on
+        self.setProperty("capturing", "true" if on else "false")
+        repolish(self)
+        if on:
+            self.setText("press a key…")
 
     def keyPressEvent(self, event):
         if self.capturing or time.monotonic() - self._ended < CAPTURE_ECHO_S:
@@ -143,11 +146,8 @@ class ShortcutRow(QFrame):
 
     def set_capturing(self, on):
         self.key.set_capturing(on)
-        for w in (self, self.key):
-            w.setProperty("capturing", "true" if on else "false")
-            repolish(w)
-        if on:
-            self.key.setText("press a key…")
+        self.setProperty("capturing", "true" if on else "false")
+        repolish(self)
 
     def show_combo(self, combo, leaks, media=False, idle=False):
         """`leaks`: the key could not be taken, so the focused app gets it too.
@@ -197,10 +197,8 @@ class ShortcutsPage(QWidget):
         self.rule_switch.toggled.connect(app.set_shortcuts_need_overlay)
         title = QLabel(SWITCH_TEXT)
         title.setObjectName("toggleLabel")
-        self.help_label = QLabel()
+        self.help_label = wrapped_label("", WRAP_W - SWITCH_W)
         self.help_label.setObjectName("helpText")
-        self.help_label.setWordWrap(True)
-        self.help_label.setFixedWidth(WRAP_W - SWITCH_W)
         rule.addWidget(self.rule_switch, 0, 0)
         rule.addWidget(title, 0, 1)
         rule.addWidget(self.help_label, 1, 1)
@@ -232,25 +230,22 @@ class ShortcutsPage(QWidget):
     def begin_capture(self, row):
         if self.app.hotkeys.error:
             return
+        # First: it ends a recording still under way, this row's included.
+        self.app.hotkeys.begin_capture(lambda combo: self._captured(row, combo))
         self.capturing = row
         row.set_capturing(True)
-        self.app.hotkeys.begin_capture()
 
-    def on_captured(self, combo):
-        row, self.capturing = self.capturing, None
-        if row is None:
-            return
+    def _captured(self, row, combo):
+        if self.capturing is row:
+            self.capturing = None
         row.set_capturing(False)
-        sc = self.app.config["shortcuts"]
-        if combo == "esc":
-            pass
-        elif combo in ("backspace", "delete"):
-            sc[row.action] = ""
-        elif why := refusal(self.app, row.action, combo):
-            inform(self, why)
-        else:
-            self.app.free_combo(combo)          # one key, one job
-            sc[row.action] = combo
+        new = recorded(combo)
+        if new is not None:
+            if why := new and refusal(self.app, row.action, new):
+                inform(self, why)
+            else:
+                self.app.free_combo(new)            # one key, one job
+                self.app.config["shortcuts"][row.action] = new
         self.app.shortcuts_changed()
         self.refresh()
 
@@ -289,7 +284,6 @@ class SourceShortcutDialog(FramelessDialog):
         self.body.addWidget(help_text)
         self.add_buttons()
 
-        hk.captured.connect(self._captured)
         if hk.error:
             self.key.setEnabled(False)
             clear.setEnabled(False)
@@ -299,11 +293,11 @@ class SourceShortcutDialog(FramelessDialog):
             self._record()
 
     def _record(self):
+        self.app.hotkeys.begin_capture(self._captured)
         self.key.set_capturing(True)
         self.key.setFocus()     # swallows Qt's copy of the key being recorded
         self._refused = ""
         self._show()
-        self.app.hotkeys.begin_capture()
 
     def _clear(self):
         if self.key.capturing:
@@ -313,22 +307,17 @@ class SourceShortcutDialog(FramelessDialog):
         self._show()
 
     def _captured(self, combo):
-        if not self.key.capturing:
-            return              # the Shortcuts tab's recording
         self.key.set_capturing(False)
-        if combo in ("backspace", "delete"):
-            self.combo = ""
-        elif combo != "esc":
-            self._refused = refusal(self.app, None, combo) or ""
+        new = recorded(combo)
+        if new is not None:
+            self._refused = new and refusal(self.app, None, new) or ""
             if not self._refused:
-                self.combo = combo
+                self.combo = new
         self._show()
 
     def _show(self):
-        capturing = self.key.capturing
-        self.key.setText("press a key…" if capturing else pretty(self.combo))
-        self.key.setProperty("capturing", "true" if capturing else "false")
-        repolish(self.key)
+        if not self.key.capturing:
+            self.key.setText(pretty(self.combo))
         note = self._refused
         if not note and self.combo:
             owner = combo_owner(self.app, self.combo, self.src)
@@ -340,10 +329,6 @@ class SourceShortcutDialog(FramelessDialog):
         self.note.setVisible(bool(note))
 
     def done(self, result):
-        try:
-            self.app.hotkeys.captured.disconnect(self._captured)
-        except (RuntimeError, TypeError):
-            pass
         if self.key.capturing:
             self.key.set_capturing(False)
             self.app.hotkeys.end_capture()

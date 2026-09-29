@@ -16,8 +16,10 @@ from .frameless import Frameless
 from .widgets import CloseButton
 
 CLOSE_BTN = 26
-# A word-wrapped label needs a pinned width, or Qt sizes it for a dozen lines.
-WRAP_W = 400
+# Every word-wrapped label needs a pinned wrapping width. Qt asks such a label
+# how tall it would be at its *minimum* width, and an unpinned one answers with
+# a dozen lines -- which the window then grows to fit and never gives back.
+WRAP_W = 400                # a popup's text column
 
 
 class FramelessDialog(Frameless, QDialog):
@@ -79,10 +81,10 @@ class FramelessDialog(Frameless, QDialog):
         return box, ok
 
 
-def wrapped_label(text):
+def wrapped_label(text, width=WRAP_W):
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setFixedWidth(WRAP_W)
+    label.setFixedWidth(width)
     return label
 
 

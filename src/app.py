@@ -11,13 +11,11 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from .core.artfetch import clean_site
 from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, all_bindings, pretty, source_index
-from .core.mpris import Mpris
+from .core.net import clean_site
+from .core.nowplaying import media_session
 from .core.player import Player
-from .core.smtc import Smtc
-from .core.sources import art_label
 from .gui import theme
 from .gui.artwork import Artwork, cache_dir
 from .gui.main_window import MainWindow
@@ -49,14 +47,9 @@ class App:
         # The desktop's Now Playing: MPRIS, or SMTC on Windows. On Linux it
         # also delivers the bare media keys; on Windows the keyboard hook
         # takes those like any other key, and SMTC only shows and presses.
-        if sys.platform == "win32":
-            self.media = Smtc(cache_dir())
-            via_desktop = False
-        else:
-            self.media = Mpris(cache_dir())
-            via_desktop = self.media.available
+        self.media = media_session(cache_dir())
         self.hotkeys = Hotkeys(all_bindings(cfg["shortcuts"], cfg["sources"]), cfg["keysyms"],
-                               media_via_desktop=via_desktop)
+                               media_via_desktop=self.media.delivers_keys)
         self.hotkeys.everywhere = not cfg["shortcuts_need_overlay"]
         self.overlay = Overlay(cfg["overlay"], pretty(cfg["shortcuts"]["play_pause"]))
         self.window = MainWindow(self)
@@ -68,7 +61,6 @@ class App:
         self.player.changed.connect(self._on_state)
         self.artwork.changed.connect(lambda: self.refresh_state())
         self.hotkeys.triggered.connect(self._on_action)
-        self.hotkeys.captured.connect(self.window.shortcuts.on_captured)
         self.hotkeys.ungrabbed.connect(self.window.shortcuts.on_ungrabbed)
         self.hotkeys.ungrabbed.connect(self.window.sources.on_ungrabbed)
         self.media.pressed.connect(self.hotkeys.press_media)
@@ -108,20 +100,15 @@ class App:
             self._save_timer.start()
 
     def _push(self, s):
-        """One state, one artwork lookup, three places that show it.
-
-        `tile` is what the generated art says when there is no picture. It
-        comes from the source's address, so renaming a station leaves its
-        picture alone.
-        """
-        src = self.player.current_source()
-        art = self.artwork.for_source(src, s.path or "")
-        tile = art_label(src)
-        self.overlay.set_now_playing(s, art, tile)
+        """One state, one artwork lookup, every place that shows them. With
+        no picture the art box draws `s.tile`, which comes from the source's
+        address, so renaming a station leaves its picture alone."""
+        art = self.artwork.for_source(self.player.current_source(), s.path or "")
+        self.overlay.set_now_playing(s, art)
         self.media.set_state(s, art)
-        self.window.set_now_playing(s, art, tile)
+        self.window.set_now_playing(s, art)
         if self.tray:
-            self.tray.set_now_playing(s, art, tile)
+            self.tray.set_now_playing(s, art)
 
     def refresh_state(self):
         self._push(self.player.snapshot())

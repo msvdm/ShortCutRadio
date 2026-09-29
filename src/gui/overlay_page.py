@@ -1,7 +1,7 @@
 """The Overlay tab: size, margins, font, transparency and colors of the card."""
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QSlider, QSpinBox, QVBoxLayout,
                                QWidget)

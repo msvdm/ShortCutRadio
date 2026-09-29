@@ -22,7 +22,7 @@ import sys
 
 from PySide6.QtCore import QObject, Signal
 
-from .mpris import ArtFile, key_for, metadata, playback_status
+from .nowplaying import MediaSession, playback_status, titles
 
 try:
     from winrt.windows.foundation import AsyncStatus
@@ -42,7 +42,7 @@ else:
               "Stopped": MediaPlaybackStatus.STOPPED}
 
 
-class Smtc(QObject):
+class Smtc(MediaSession, QObject):
     pressed = Signal(str)           # the media key a Now Playing button stands for
     raise_requested = Signal()      # never: SMTC has no Raise; kept for the seam
     _button = Signal(str)           # from the thread pool
@@ -50,14 +50,10 @@ class Smtc(QObject):
 
     def __init__(self, art_dir):
         super().__init__()
-        self._art = ArtFile(art_dir)
-        self._state = None
-        self._pixmap = None
-        self._keys = frozenset()
+        self._session(art_dir)
         self._on = False
         self._shown = None          # what the session shows now, to skip repeats
         self._thumb = ""            # the picture asked for, by file
-        self.available = False
         if MediaPlayer is None or sys.platform != "win32":
             return
         try:
@@ -90,23 +86,12 @@ class Smtc(QObject):
             self._publish()
         self._smtc.is_enabled = self._on
 
-    def set_keys(self, keys):
-        """The media keys that are bound: which buttons the flyout offers."""
-        self._keys = frozenset(keys)
-        self._publish()
-
-    def set_state(self, state, pixmap):
-        self._state, self._pixmap = state, pixmap
-        self._publish()
-
     # ------------------------------------------------------------------ publish
     def _publish(self):
         if not self._on or self._state is None:
             return
-        meta = metadata(self._state)
-        artist = meta.get("xesam:artist", [""])[0]
-        shown = (playback_status(self._state), meta.get("xesam:title", ""), artist,
-                 self._keys)
+        title, artist = titles(self._state)
+        shown = (playback_status(self._state), title, artist, self._keys)
         if shown != self._shown:
             self._shown = shown
             smtc, keys = self._smtc, self._keys
@@ -117,7 +102,7 @@ class Smtc(QObject):
             smtc.playback_status = STATUS[shown[0]]
             du = smtc.display_updater
             du.type = MediaPlaybackType.MUSIC
-            du.music_properties.title = shown[1]
+            du.music_properties.title = title
             du.music_properties.artist = artist
             du.update()
         self._ask_thumbnail(self._art.path(self._pixmap))
@@ -141,9 +126,3 @@ class Smtc(QObject):
         du = self._smtc.display_updater
         du.thumbnail = RandomAccessStreamReference.create_from_file(file) if file else None
         du.update()
-
-    # ------------------------------------------------------------------ flyout
-    def _press(self, method):
-        key = key_for(method, self._state is not None and self._state.playing)
-        if key:
-            self.pressed.emit(key)

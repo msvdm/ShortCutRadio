@@ -141,7 +141,8 @@ def default_layout():
 
 
 class KeyHook:
-    """The Windows counterpart of the pynput listener and KeyGrabber together.
+    """The Windows counterpart of keygrab.XKeys (the pynput listener and the
+    X11 grabs together).
 
     `on_key(name, mods, repeat)` is called on the hook's thread for every key
     press that is not a modifier, and returns True to take the key.
@@ -159,6 +160,7 @@ class KeyHook:
 
     def start(self):
         if not self.available:
+            self.error = "no keyboard hook on this system"
             return False
         ready = threading.Event()
         self._thread = threading.Thread(target=self._run, args=(ready,),

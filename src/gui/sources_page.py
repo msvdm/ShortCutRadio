@@ -9,17 +9,18 @@ from PySide6.QtCore import QRectF, QSignalBlocker, QSize, Qt, QTimer
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter,
                            QPainterPath)
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QLabel,
-                               QListWidget, QListWidgetItem, QMenu, QPushButton, QStyle,
+                               QListWidget, QListWidgetItem, QPushButton, QStyle,
                                QStyledItemDelegate, QToolTip, QVBoxLayout, QWidget)
 
-from ..core.artfetch import clean_site, site_for_stream
+from ..core.artfetch import site_for_stream
 from ..core.hotkeys import pretty
+from ..core.net import clean_site
 from ..core.sources import describe, folder_tracks, is_folder, make_folder, make_stream
 from . import theme
 from .add_stream import AddStreamDialog
 from .dialogs import ask_text, inform
 from .shortcuts_page import IDLE_TIP, SOURCE_TIP, UNGRABBED_TIP, SourceShortcutDialog
-from .widgets import Meter, draw_level_bars, level_bars_width, mono_font
+from .widgets import Meter, SkinnedMenu, draw_level_bars, level_bars_width, mono_font
 
 LIST_HINT = "drag to reorder · double-click to play"
 NOTE_MS = 4000
@@ -265,10 +266,7 @@ class SourcesPage(QWidget):
             return
         src = srcs[row]         # the real source; the item only holds a copy
         edit = self.app.edit_source
-        m = QMenu(self)
-        # Rounded corners need a see-through window behind them (as the tray's).
-        m.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-        m.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        m = SkinnedMenu(parent=self)
         m.addAction("Play", lambda: self.app.player.play_source(row))
         m.addAction("Rename…", lambda: self.rename(src))
         m.addAction("Shortcut…", lambda: self.set_shortcut(src))
@@ -341,4 +339,4 @@ class SourcesPage(QWidget):
     def add_stream(self):
         dlg = AddStreamDialog(self)
         if dlg.exec() and dlg.selected:
-            self.app.add_sources([make_stream(n, u, site) for n, u, site in dlg.selected])
+            self.app.add_sources([make_stream(f.name, f.url, f.site) for f in dlg.selected])

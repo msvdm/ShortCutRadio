@@ -35,6 +35,11 @@ def _file(key, ext):
     return os.path.join(cache_dir(), name + ext)
 
 
+def _picture(pm):
+    """A pixmap, or None for one that is not a picture at all."""
+    return None if pm.isNull() else pm
+
+
 def source_key(source):
     """What identifies a station's art: its stream, not its name."""
     return "site:" + (source.get("target") or "") if source else ""
@@ -84,9 +89,7 @@ class Artwork(QObject):
             return self._pixmaps[key]
         path = _file(key, ".png")
         if os.path.exists(path):
-            pm = QPixmap(path)
-            self._pixmaps[key] = pm if not pm.isNull() else None
-            return self._pixmaps[key]
+            return self._load(key, path)
         if not self._missed_recently(key):
             self._enqueue(key, source)
         return None
@@ -94,8 +97,7 @@ class Artwork(QObject):
     def _load(self, key, path):
         """A picture from disk, remembered by path -- including "not an image"."""
         if key not in self._pixmaps:
-            pm = QPixmap(path)
-            self._pixmaps[key] = pm if not pm.isNull() else None
+            self._pixmaps[key] = _picture(QPixmap(path))
         return self._pixmaps[key]
 
     @staticmethod
@@ -141,9 +143,8 @@ class Artwork(QObject):
         if image is None:
             self._remember_miss(key)
             return
-        pm = QPixmap.fromImage(image)
-        self._pixmaps[key] = pm if not pm.isNull() else None
-        if self._pixmaps[key] is not None:
+        pm = self._pixmaps[key] = _picture(QPixmap.fromImage(image))
+        if pm is not None:
             try:
                 os.makedirs(cache_dir(), exist_ok=True)
                 pm.save(_file(key, ".png"), "PNG")

@@ -6,7 +6,7 @@ needs a repaint, not a rebuild. The art box's picture work is in art.py.
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import (QAbstractButton, QComboBox, QFontComboBox,
+from PySide6.QtWidgets import (QAbstractButton, QComboBox, QFontComboBox, QMenu,
                                QSizePolicy, QWidget)
 
 from ..core import levels
@@ -302,6 +302,17 @@ class TriangleButton(QAbstractButton):
     def leaveEvent(self, event):
         self.update()
         super().leaveEvent(event)
+
+
+class SkinnedMenu(QMenu):
+    """A menu wearing the skin. Its rounded corners need a see-through window
+    behind them, or they sit on a white square: every menu ShortCutRadio pops
+    up is one of these."""
+
+    def __init__(self, title="", parent=None):
+        super().__init__(title, parent)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
 
 class _Chevron:

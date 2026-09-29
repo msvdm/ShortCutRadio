@@ -25,13 +25,13 @@ QtDBus quirks, measured with PySide6 6.11:
   applet only asks for it when `CanSeek` is true, which it never is here.
 """
 
-import glob
 import os
 import sys
 
 from PySide6.QtCore import QMetaType, QObject, QUrl, Signal
 
 from .mediakeys import MediaKeyClaim
+from .nowplaying import METHOD_KEYS, MediaSession, playback_status, titles
 
 try:
     from PySide6.QtDBus import (QDBusArgument, QDBusConnection, QDBusMessage,
@@ -47,13 +47,6 @@ PLAYER = "org.mpris.MediaPlayer2.Player"
 PROPS = "org.freedesktop.DBus.Properties"
 INTROSPECTABLE = "org.freedesktop.DBus.Introspectable"
 NO_TRACK = "/org/mpris/MediaPlayer2/TrackList/NoTrack"
-
-# What the desktop calls -> the key it stands for.
-METHOD_KEYS = {
-    "PlayPause": "media_play_pause", "Play": "media_play_pause",
-    "Pause": "media_play_pause", "Next": "media_next",
-    "Previous": "media_previous", "Stop": "media_stop",
-}
 
 INTROSPECTION = f"""<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
@@ -104,32 +97,16 @@ INTROSPECTION = f"""<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Intr
 </node>"""
 
 
-def key_for(method, playing):
-    """The media key a Player method stands for, or None when it has nothing
-    to do: Play while playing, or Pause while not, must not toggle."""
-    if (method == "Play" and playing) or (method == "Pause" and not playing):
-        return None
-    return METHOD_KEYS.get(method)
-
-
-def playback_status(state):
-    phase = state.phase
-    if phase in ("playing", "connecting"):
-        return "Playing"
-    if phase == "paused":
-        return "Paused"
-    return "Stopped"
-
-
 def metadata(state, art_url=""):
-    """The now-playing fields. The station is the artist when a track is known,
-    the title when it isn't. The track id is a plain path string here."""
+    """The now-playing fields (`titles`). The track id is a plain path string
+    here, and no empty artist list ever goes out."""
     if not state.count:
         return {"mpris:trackid": NO_TRACK}
+    title, artist = titles(state)
     meta = {"mpris:trackid": f"/org/shortcutradio/source{state.index}",
-            "xesam:title": state.track or state.name}
-    if state.track and state.name:
-        meta["xesam:artist"] = [state.name]
+            "xesam:title": title}
+    if artist:
+        meta["xesam:artist"] = [artist]
     if art_url:
         meta["mpris:artUrl"] = art_url
     return meta
@@ -149,32 +126,6 @@ def player_props(state, keys, art_url=""):
         "CanSeek": False,
         "CanControl": True,
     }
-
-
-class ArtFile:
-    """The now-playing picture as a file the desktop can read, saved once per
-    picture. Shared with smtc.py, whose thumbnail is read from a file too."""
-
-    def __init__(self, art_dir):
-        self._dir = art_dir
-        self._art = (None, "")      # (pixmap cacheKey, the file it was saved to)
-
-    def path(self, pm):
-        if pm is None or pm.isNull():
-            return ""
-        key = pm.cacheKey()
-        if key != self._art[0]:
-            path = os.path.join(self._dir, f"nowplaying-{key & 0xFFFFFFFF:08x}.png")
-            try:
-                os.makedirs(self._dir, exist_ok=True)
-                for old in glob.glob(os.path.join(self._dir, "nowplaying-*.png")):
-                    os.remove(old)
-                if not pm.save(path, "PNG"):
-                    path = ""
-            except OSError:
-                path = ""
-            self._art = (key, path)
-        return self._art[1]
 
 
 def _no_strings():
@@ -197,16 +148,13 @@ def _wire(props):
     return out
 
 
-class Mpris(QDBusVirtualObject):
+class Mpris(MediaSession, QDBusVirtualObject):
     pressed = Signal(str)           # the media key the desktop delivered
     raise_requested = Signal()
 
     def __init__(self, art_dir):
         super().__init__()
-        self._art = ArtFile(art_dir)
-        self._state = None
-        self._pixmap = None
-        self._keys = frozenset()
+        self._session(art_dir)
         self._props = {ROOT: {
             "CanQuit": False, "CanRaise": True, "HasTrackList": False,
             "Identity": "ShortCutRadio", "DesktopEntry": "shortcutradio",
@@ -216,7 +164,6 @@ class Mpris(QDBusVirtualObject):
         self._bus = None
         self._claim = MediaKeyClaim()
         self._claim.pressed.connect(self.pressed)
-        self.available = False
         if QDBusConnection is None or not sys.platform.startswith("linux"):
             return
         bus = QDBusConnection.sessionBus()
@@ -229,6 +176,10 @@ class Mpris(QDBusVirtualObject):
     @property
     def active(self):
         return bool(self._service)
+
+    @property
+    def delivers_keys(self):
+        return self.available
 
     # ------------------------------------------------------------------ app side
     def set_active(self, on):
@@ -251,15 +202,6 @@ class Mpris(QDBusVirtualObject):
             print("[mpris] could not take a player name on the bus", flush=True)
             return
         self._claim.take()
-
-    def set_keys(self, keys):
-        """The media keys that are bound: what the desktop may offer to press."""
-        self._keys = frozenset(keys)
-        self._publish()
-
-    def set_state(self, state, pixmap):
-        self._state, self._pixmap = state, pixmap
-        self._publish()
 
     # ------------------------------------------------------------------ publish
     def _publish(self, emit=True):
@@ -304,9 +246,7 @@ class Mpris(QDBusVirtualObject):
         elif iface in (ROOT, "") and member == "Raise":
             self.raise_requested.emit()
         elif iface in (PLAYER, "") and member in METHOD_KEYS:
-            key = key_for(member, self._state is not None and self._state.playing)
-            if key:
-                self.pressed.emit(key)
+            self._press(member)
         elif iface in (ROOT, PLAYER, ""):
             pass                    # Quit, Seek, SetPosition, OpenUri: nothing to do
         else:

@@ -45,12 +45,13 @@ src/core/scraper.py       Add Stream: URL/page/playlist -> list of verified stre
 src/core/artfetch.py      a station's page -> its logo (stdlib only; same style as scraper)
 src/core/coverart.py      a local track's cover: a file beside it, or ID3/FLAC/Ogg/MP4 art
 src/core/levels.py        the level meters' numbers (pure, so they can be tested)
-src/core/hotkeys.py       gating + capture mode; the listener is pynput (X11) or keygrab_win
-src/core/keygrab.py       X11 passive grabs so live keys don't reach the focused app
+src/core/hotkeys.py       what a key means: gating + recording, the same on every platform
+src/core/keygrab.py       X11 keyboard (XKeys): pynput hears, passive grabs take live keys
 src/core/keygrab_win.py   Windows: one low-level keyboard hook that hears, fires and takes
+src/core/nowplaying.py    the desktop's Now Playing seam (MediaSession), shared by:
 src/core/mpris.py         media keys: ShortCutRadio as an MPRIS player (QtDBus), sound applet
 src/core/mediakeys.py     media keys: the settings daemon's claim (jeepney)
-src/core/smtc.py          Windows' Now Playing (SMTC, pywinrt), behind mpris.py's seam
+src/core/smtc.py          Windows' Now Playing (SMTC, pywinrt)
 src/gui/theme.py          the skin: two token palettes + the app-wide stylesheet
 src/gui/widgets.py        the hand-painted parts: pill switch, transport, meters, labels
 src/gui/art.py            the art box: trim, fit, backdrop, initials tile (FittedArt)
@@ -62,7 +63,7 @@ src/gui/shortcuts_page.py   key caps and capture
 src/gui/overlay_page.py     the card's look
 src/gui/artwork.py        which picture a source gets, cached on disk, fetched off-thread
 src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
-tests/test_core.py        pytest, pure functions only
+tests/                    pytest, one file per area: hotkeys, streams, player, art
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
 requirements.txt          pip dependencies (PySide6 brings the player and its FFmpeg)
 shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/
@@ -145,9 +146,12 @@ The README still tells other people to make a venv: that is their machine.
   binding to `Hotkeys`, so the overlay rule, the switch, idle ⚠ and the
   grabs apply unchanged. One key, one job across both kinds
   (`App.free_combo`); the recording rules live in `shortcuts_page.refusal`
-  for the tab and the popup alike. The row shows the key as a key cap.
+  for the tab and the popup alike. The row shows the key as a key cap. A
+  recording has one owner: `Hotkeys.begin_capture(on_done)` hands the key to
+  whoever asked, and a new recording gives up the one before (a source's
+  popup opened while a tab row records).
 - **Observe + grab, not grab alone.** The pynput listener (XRECORD) fires the
-  actions. keygrab.py only swallows keys. XRECORD still sees grabbed keys, so
+  actions; the grabs only swallow keys. XRECORD still sees grabbed keys, so
   each action fires once, and it also sees keys inside fullscreen Wine games,
   where the game's own keyboard grab beats our passive grabs. There the key
   reaches the game too, which is unavoidable: pick keys the game doesn't use.
@@ -364,9 +368,12 @@ The README still tells other people to make a venv: that is their machine.
   `win32_event_filter` is hidden from its own listener too
   (moses-palmer/pynput#679). A `WH_KEYBOARD_LL` hook (`keygrab_win.KeyHook`,
   ctypes, its own thread and message loop) hears every key before any app
-  and asks `Hotkeys._handle` whether it is a live binding; if so the action
+  and asks `Hotkeys.on_key` whether it is a live binding; if so the action
   fires and the hook returns non-zero, and the key's *release* is taken as
-  well. So Windows has no observe/grab split and no pynput at all. The
+  well. So Windows has no observe/grab split and no pynput at all:
+  `KeyHook` and `keygrab.XKeys` are one seam (`on_key(name, mods, repeat)`,
+  `start`, `stop`, `set_combos`, `error`), and hotkeys.py never asks which
+  platform it is on. The
   overlay rule is unchanged, and capture takes the key it records (Esc or
   Alt+F4 while recording must not act on the window). Key names follow
   pynput's; a printable key is named by its scan code through the *default*
@@ -386,10 +393,11 @@ The README still tells other people to make a venv: that is their machine.
   platforms. SMTC (`smtc.py`) is what MPRIS is for the sound applet: the
   station, track and logo in the volume flyout and on the lock screen, and
   its buttons press the bound media keys through `press_media`. Same seam
-  as `Mpris` (`available`, `set_active`, `set_keys`, `set_state`, `pressed`),
-  same rule: a session only while the shortcuts are live and a media key
-  is bound; otherwise it is gone from the flyout. `App.media` holds
-  whichever one the platform has.
+  as `Mpris` (`nowplaying.MediaSession`: `available`, `delivers_keys`,
+  `set_active`, `set_keys`, `set_state`, `pressed`), same rule: a session
+  only while the shortcuts are live and a media key is bound; otherwise it
+  is gone from the flyout. `App.media` holds whichever one the platform
+  has (`nowplaying.media_session`).
 - **The Windows build is 99 MB** (the installer 30 MB, the zip 41 MB; it
   was 194 MB with libmpv-2.dll). It carries Qt Multimedia's FFmpeg backend
   and PySide6's FFmpeg (21 MB). The spec drops what PySide6's hooks drag in
@@ -427,7 +435,7 @@ The README still tells other people to make a venv: that is their machine.
   `…AAC_H.aac` station) sends a browser User-Agent 32,768 bytes and hangs
   up: two seconds of sound, then the 5 s retry, forever. `net.UA` poses as
   Chrome for the station *pages*; the relay sends `ShortCutRadio/<version>`
-  (`relay.UA`). mpv never hit it: it said "mpv".
+  (`net.APP_UA`). mpv never hit it: it said "mpv".
 - **Most Ogg/Opus mounts send no title**: their comment says only
   `ENCODER=`. mpv showed nothing for them either. Radio Paradise's first
   FLAC chain has an empty comment; its title comes with the next song.
@@ -442,7 +450,7 @@ The README still tells other people to make a venv: that is their machine.
   hook finds the backend by importing pynput, which needs a display: built
   over SSH, the app had no `pynput.keyboard._xorg` and dead keys. The spec
   names the backend modules (`PYNPUT_XORG`); the hook's warning stays.
-- **Wrap pynput callbacks** (`Hotkeys._safe`): an uncaught exception silently
+- **Wrap pynput callbacks** (`keygrab._safe`): an uncaught exception silently
   stops the whole listener.
 - **Auto-repeat re-fires the action, and a repeat carries no release.**
   Measured here: holding a key sends 25 presses and 1 release in 1.2 s -- the
@@ -450,7 +458,7 @@ The README still tells other people to make a venv: that is their machine.
   old 250 ms debounce only thinned that to 4/s, so holding Ctrl+E for 0.8 s
   toggled play/pause three times and looked like a dead shortcut; that was the
   "sometimes it works" bug. A key not yet seen released is repeating
-  (`Hotkeys._down`) and only volume rides it. The gap that forgives a release
+  (`XKeys._down`) and only volume rides it. The gap that forgives a release
   we never saw must be longer than the repeat *delay*, not the interval
   between repeats, and a modifier's release clears the held keys -- a held key
   reports a different character once Shift is gone.
@@ -480,9 +488,10 @@ The README still tells other people to make a venv: that is their machine.
 - **Linux puts icons on OK/Cancel; Windows doesn't.** Fusion asks the
   platform theme, and Mint's says yes: the popups built on Windows showed
   a red icon on Cancel here. The stylesheet turns it off for every
-  `QDialogButtonBox` (`dialogbuttonbox-buttons-have-icons`). Likewise any
-  QMenu we pop needs the tray's frameless + translucent pair, or its round
-  corners sit on a white square (the Sources right-click menu did).
+  `QDialogButtonBox` (`dialogbuttonbox-buttons-have-icons`). Likewise a
+  QMenu needs a frameless, translucent window, or its round corners sit on
+  a white square (the Sources right-click menu did): every menu we pop up
+  is a `widgets.SkinnedMenu`.
 - **QSS font-size beats `setFont`.** Anything given a monospace face in code
   (key caps, the status line, the spin boxes) must have its size pinned in the
   stylesheet too, or the class rule overrides it. The family survives, because
@@ -585,7 +594,9 @@ The README still tells other people to make a venv: that is their machine.
 
 ## Testing
 
-- `python3 -m pytest -q tests` (with `DISPLAY` set, or the pynput tests skip)
+- `python3 -m pytest -q tests`. The X11 key tests hand keys to `XKeys`
+  directly; without a display (or without pynput) a stand-in for pynput's
+  two key types does, so they run everywhere.
 - Run against a scratch config so the real one (`~/.config/ShortCutRadio/`) is
   untouched: `XDG_CONFIG_HOME=/tmp/x python3 shortcutradio.py`.
   `SHORTCUTRADIO_DEBUG_KEYS=1` logs every observed combo.
@@ -636,8 +647,8 @@ The README still tells other people to make a venv: that is their machine.
 
 ### Windows
 
-- `python -m pytest -q tests` -- the pynput tests skip; the
-  hook tests feed `KeyHook.event` raw events on any platform.
+- `python -m pytest -q tests` -- the X11 key tests run on a stand-in for
+  pynput; the hook tests feed `KeyHook.event` raw events on any platform.
 - **Scale check without a second monitor:** start `App` with
   `QT_QPA_PLATFORM=offscreen`, `QT_SCALE_FACTOR=1.25` (1.5, 2),
   `QT_QPA_FONTDIR=C:/Windows/Fonts` (offscreen has no fonts: every letter a

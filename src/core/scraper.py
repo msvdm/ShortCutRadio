@@ -22,11 +22,10 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from .net import (NET_ERRORS, TIMEOUT, clean_site, icecast_sources, open_url,
-                  read_json, same_site, site_of)
+from .net import (APP_UA, ICY_HEADERS, NET_ERRORS, TIMEOUT, clean_site, icecast_sources,
+                  is_page, open_url, read_json, read_page, read_text, same_site, site_of)
 from .sources import name_from_url
 
-PAGE_MAX = 3 * 1024 * 1024
 MAX_CANDIDATES = 80
 MAX_SCRIPTS = 6
 MAX_ICECAST_HOSTS = 3
@@ -52,6 +51,25 @@ class Found:
     url: str
     detail: str = ""
     site: str = ""          # the station's own page: where its logo lives
+
+
+# What one URL turned out to be (`classify`).
+@dataclass
+class Audio:
+    found: Found
+    server: str             # the Server header, lower case: "icecast" has more mounts
+
+
+@dataclass
+class Playlist:
+    title: str
+    urls: list
+
+
+@dataclass
+class Page:
+    text: str
+    url: str                # where it ended up, after redirects
 
 
 # ------------------------------------------------------------------ helpers
@@ -150,12 +168,9 @@ def _detail(ct, headers):
 
 # ------------------------------------------------------------------ probing
 def classify(url, want_page=False):
-    """Look at one URL. Returns one of
-        ("audio", Found, server_header)
-        ("playlist", title, [urls])
-        ("page", text, final_url)
-        None  -- unreachable or not interesting
-    Page bodies are only read when `want_page` (the user's own URL, scripts).
+    """Look at one URL: an Audio, a Playlist, a Page, or None when it is
+    unreachable or not interesting. A page's body is read only when
+    `want_page` (the user's own URL).
     """
     try:
         resp = open_url(url)
@@ -163,7 +178,7 @@ def classify(url, want_page=False):
         # Old SHOUTcast v1 answers "ICY 200 OK", which http.client rejects --
         # that answer itself proves it is a stream.
         if "ICY" in str(e):
-            return ("audio", Found(name_from_url(url), url, "SHOUTcast"), "shoutcast")
+            return Audio(Found(name_from_url(url), url, "SHOUTcast"), "shoutcast")
         return None
     except NET_ERRORS:
         return None
@@ -182,27 +197,25 @@ def classify(url, want_page=False):
         is_hls = "mpegurl" in ct and "#EXT-X-" in text_head or \
             text_head.startswith("#EXTM3U") and "#EXT-X-" in text_head
         if is_hls:
-            return ("audio", Found(name_from_url(url), url, "HLS"), server)
+            return Audio(Found(name_from_url(url), url, "HLS"), server)
 
         if ct in ("audio/x-scpls", "audio/scpls") or text_head.lower().startswith("[playlist]") \
                 or "mpegurl" in ct or (_ext(urllib.parse.urlsplit(final).path) in (".pls", ".m3u")
                                        and ct.startswith("text")):
             body = text_head + _read_rest(resp, 64 * 1024)
             title, urls = parse_playlist(body, final)
-            return ("playlist", title, urls) if urls else None
+            return Playlist(title, urls) if urls else None
 
         if ct.startswith("audio/") or ct in ("application/ogg", "video/mp2t") \
-                or "icy-name" in headers or "icy-metaint" in headers or "icy-br" in headers:
+                or any(h in headers for h in ICY_HEADERS):
             name = headers.get("icy-name", "").strip()
             if not name or name.lower() in ("no name", "unspecified description"):
                 name = name_from_url(url)
-            return ("audio", Found(name, url, _detail(ct, headers),
-                                   clean_site(headers.get("icy-url"))), server)
+            return Audio(Found(name, url, _detail(ct, headers),
+                               clean_site(headers.get("icy-url"))), server)
 
-        if want_page and (ct.startswith("text/") or "javascript" in ct or "json" in ct or not ct):
-            body = head + _read_rest(resp, PAGE_MAX).encode("utf-8", "surrogateescape")
-            charset = resp.headers.get_content_charset() or "utf-8"
-            return ("page", body.decode(charset, "replace"), final)
+        if want_page and is_page(ct):
+            return Page(read_text(resp, head), final)
     return None
 
 
@@ -214,23 +227,19 @@ def _read_rest(resp, limit):
 
 
 def resolve(url, depth=0):
-    """Candidate URL -> [(Found, server)]. Playlists are followed one level:
-    a .pls usually lists mirrors of one stream, so its first working entry
-    stands for it, named after the playlist's title."""
-    r = classify(url)
-    if r is None:
-        return []
-    if r[0] == "audio":
-        return [(r[1], r[2])]
-    if r[0] == "playlist" and depth == 0:
-        title, urls = r[1], r[2]
-        for u in urls[:6]:
-            got = resolve(u, depth + 1)
-            if got:
-                found, server = got[0]
-                if title:
-                    found.name = title
-                return [(found, server)]
+    """Candidate URL -> [Audio]. Playlists are followed one level: a .pls
+    usually lists mirrors of one stream, so its first working entry stands
+    for it, named after the playlist's title."""
+    match classify(url):
+        case Audio() as audio:
+            return [audio]
+        case Playlist(title, urls) if depth == 0:
+            for u in urls[:6]:
+                got = resolve(u, depth + 1)
+                if got:
+                    if title:
+                        got[0].found.name = title
+                    return got[:1]
     return []
 
 
@@ -263,7 +272,7 @@ def radio_browser(query, report=lambda m: None):
            + urllib.parse.urlencode({"name": q, "limit": 20, "hidebroken": "true",
                                      "order": "clickcount", "reverse": "true"}))
     try:
-        rows = read_json(api, 1024 * 1024, {"User-Agent": "ShortCutRadio/0.1"})
+        rows = read_json(api, 1024 * 1024, {"User-Agent": APP_UA})
     except NET_ERRORS:
         return []
     out = []
@@ -288,48 +297,53 @@ def discover(url, report=lambda m: None):
     if first is None:
         return []
 
-    results, servers = [], {}
-    if first[0] == "audio":
-        results.append(first[1])
-        servers[_key(first[1].url)] = first[2]
-        page_title = ""
-    elif first[0] == "playlist":
-        results += [f for f, _ in resolve(url)]
-        page_title = first[1]
-    else:
-        text, final = first[1], first[2]
-        m = TITLE.search(text)
-        page_title = html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
-        candidates = _page_candidates(text, final)
-        report(f"Checking {len(candidates)} possible stream"
-               f"{'s' if len(candidates) != 1 else ''}…")
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            for got in pool.map(resolve, candidates):
-                for found, server in got:
-                    results.append(found)
-                    servers[_key(found.url)] = server
-        one_station = len({f.name for f in results}) == 1
-        for f in results:
-            f.site = origin_site(final, f, one_station)
-            if not same_site(final, f.site or f.url):
-                f.url = strip_referrer(f.url, final)
+    page_title, found, heard = "", [], []       # heard: Audio, whose server we know
+    match first:
+        case Audio():
+            heard = [first]
+        case Playlist(title):
+            page_title, found = title, [a.found for a in resolve(url)]
+        case Page(text, final):
+            page_title, heard = _page_title(text), _page_streams(text, final, report)
+    found += [a.found for a in heard]
+    found = _dedupe(found + _other_mounts(heard, report))
+    if not found and page_title:
+        found = _dedupe(radio_browser(page_title, report))
+    return found
 
-    # One channel of an Icecast server usually means there are more.
-    hosts = []
-    for f in results:
-        if "icecast" in servers.get(_key(f.url), ""):
-            netloc = urllib.parse.urlsplit(f.url).netloc
-            if netloc not in hosts:
-                hosts.append(netloc)
-    for netloc in hosts[:MAX_ICECAST_HOSTS]:
-        sample = next(f.url for f in results if urllib.parse.urlsplit(f.url).netloc == netloc)
+
+def _page_title(text):
+    m = TITLE.search(text)
+    return html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
+
+
+def _page_streams(text, final, report):
+    """[Audio] for the streams a page links to, each credited to its station."""
+    candidates = _page_candidates(text, final)
+    report(f"Checking {len(candidates)} possible stream"
+           f"{'s' if len(candidates) != 1 else ''}…")
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        heard = [a for got in pool.map(resolve, candidates) for a in got]
+    one_station = len({a.found.name for a in heard}) == 1
+    for a in heard:
+        f = a.found
+        f.site = origin_site(final, f, one_station)
+        if not same_site(final, f.site or f.url):
+            f.url = strip_referrer(f.url, final)
+    return heard
+
+
+def _other_mounts(heard, report):
+    """One channel of an Icecast server usually means there are more."""
+    hosts = {}                  # netloc -> a stream on it, in order of appearance
+    for a in heard:
+        if "icecast" in a.server:
+            hosts.setdefault(urllib.parse.urlsplit(a.found.url).netloc, a.found.url)
+    out = []
+    for netloc, sample in list(hosts.items())[:MAX_ICECAST_HOSTS]:
         report(f"Asking {netloc} for its other channels…")
-        results += icecast_mounts(sample)
-
-    results = _dedupe(results)
-    if not results and page_title:
-        results = _dedupe(radio_browser(page_title, report))
-    return results
+        out += icecast_mounts(sample)
+    return out
 
 
 def origin_site(page, found, one_station):
@@ -367,19 +381,24 @@ def strip_referrer(url, page):
 def _page_candidates(text, final):
     """Stream-looking URLs on a page and in its same-site scripts."""
     candidates = harvest(text, final)
-    page_host = (urllib.parse.urlsplit(final).hostname or "").lower()
-    site = ".".join(page_host.split(".")[-2:])
-    scripts = []
-    for s in SCRIPT_SRC.findall(text):
-        su = urllib.parse.urljoin(final, html.unescape(s))
-        if (urllib.parse.urlsplit(su).hostname or "").endswith(site):
-            scripts.append(su)
-    for su in scripts[:MAX_SCRIPTS]:
-        r = classify(su, want_page=True)
-        if r and r[0] == "page":
+    for su in own_scripts(text, final)[:MAX_SCRIPTS]:
+        script = read_page(su)
+        if script:
             seen = {_key(c) for c in candidates}
-            candidates += [c for c in harvest(r[1], su) if _key(c) not in seen]
+            candidates += [c for c in harvest(script[0], su) if _key(c) not in seen]
     return candidates[:MAX_CANDIDATES]
+
+
+def own_scripts(text, page_url):
+    """The page's scripts from its own site, where a player keeps its stream
+    list. Another site's (analytics, a framework on a CDN) never holds them;
+    nor does one on bbc.co.uk's neighbour, or on notsomafm.com."""
+    out = []
+    for s in SCRIPT_SRC.findall(text):
+        url = urllib.parse.urljoin(page_url, html.unescape(s))
+        if same_site(page_url, url):
+            out.append(url)
+    return out
 
 
 def clean_name(name):

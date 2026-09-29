@@ -16,8 +16,7 @@ import html
 import re
 import urllib.parse
 
-from .net import NET_ERRORS, clean_site, icecast_sources, open_url
-from .scraper import classify
+from .net import NET_ERRORS, clean_site, icecast_sources, open_url, read_page
 
 TIMEOUT_BYTES = 4 * 1024 * 1024
 MAX_TRY = 4                 # downloads before we give up on a page
@@ -204,10 +203,10 @@ def logo_from_page(site_url, need=()):
     the hosting company rather than the station, and their logo is worse than
     no logo at all.
     """
-    got = classify(site_url, want_page=True)
-    if not got or got[0] != "page":
+    page = read_page(site_url)
+    if page is None:
         return None
-    text, final = got[1], got[2]
+    text, final = page
     if not mentions(text, need):
         return None
     runner_up = None

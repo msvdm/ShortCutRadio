@@ -16,10 +16,10 @@ import sys
 from PySide6.QtCore import QRectF, QSignalBlocker, Qt
 from PySide6.QtGui import (QActionGroup, QColor, QCursor, QIcon, QPainter,
                            QPen, QPixmap)
-from PySide6.QtWidgets import (QHBoxLayout, QMenu, QSystemTrayIcon,
-                               QVBoxLayout, QWidget, QWidgetAction)
+from PySide6.QtWidgets import (QHBoxLayout, QSystemTrayIcon, QVBoxLayout, QWidget,
+                               QWidgetAction)
 
-from .widgets import ArtView, ElidedLabel
+from .widgets import ArtView, ElidedLabel, SkinnedMenu
 
 THEMES = [("light", "Light"), ("dark", "Dark"), ("auto", "Auto")]
 ICON_NAME = "shortcutradio"
@@ -108,7 +108,7 @@ class Tray(QSystemTrayIcon):
         super().__init__(app.icon)
         self.app = app
         self.setToolTip("ShortCutRadio")
-        menu = QMenu()
+        menu = SkinnedMenu()
 
         self.header = NowPlayingHeader()
         header_action = QWidgetAction(menu)
@@ -127,7 +127,8 @@ class Tray(QSystemTrayIcon):
         self.overlay_action.setCheckable(True)
         self.overlay_action.toggled.connect(app.set_overlay)
 
-        theme_menu = menu.addMenu("Theme")
+        theme_menu = SkinnedMenu("Theme", menu)
+        menu.addMenu(theme_menu)
         group = QActionGroup(theme_menu)
         group.setExclusive(True)
         self.theme_actions = {}
@@ -140,10 +141,6 @@ class Tray(QSystemTrayIcon):
 
         menu.addAction("Open ShortCutRadio", app.show_window)
         menu.addAction("Quit", app.quit)
-        for m in (menu, theme_menu):
-            # Rounded corners need a see-through window behind them.
-            m.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-            m.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._menu = menu
         self.activated.connect(self._activated)
         self.set_theme_checked(app.config["theme"])
@@ -171,7 +168,7 @@ class Tray(QSystemTrayIcon):
         if act:
             act.setChecked(True)
 
-    def set_now_playing(self, s, art=None, tile=""):
+    def set_now_playing(self, s, art=None):
         self.play_action.setText("Pause" if s.playing else "Play")
         self.track_action.setEnabled(s.can_skip_track)
         match s.phase:
@@ -186,4 +183,4 @@ class Tray(QSystemTrayIcon):
         self.setToolTip(tip)
         self.header.name.setText(s.name or "ShortCutRadio")
         self.header.track.setText(s.track)
-        self.header.art.set_art(art, tile)
+        self.header.art.set_art(art, s.tile)

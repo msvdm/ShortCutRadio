@@ -1,5 +1,6 @@
 """Add Stream popup: paste a URL, pick from the streams found behind it."""
 
+import dataclasses
 import threading
 
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, Signal
@@ -104,7 +105,7 @@ class AddStreamDialog(FramelessDialog):
                             | Qt.ItemFlag.ItemIsEditable)
                 it.setCheckState(0, Qt.CheckState.Checked)
                 it.setToolTip(2, f.url)
-                it.setData(0, Qt.ItemDataRole.UserRole, f.site)
+                it.setData(0, Qt.ItemDataRole.UserRole, f)
                 self.tree.addTopLevelItem(it)
         self._update_ok()
 
@@ -124,9 +125,9 @@ class AddStreamDialog(FramelessDialog):
         self.toggle_btn.setText("Select none" if checked else "Select all")
 
     def accept(self):
-        """(name, url, site) per ticked row -- the site is where its logo lives."""
-        self.selected = [(it.text(0).strip() or it.text(2), it.text(2),
-                          it.data(0, Qt.ItemDataRole.UserRole) or "")
-                         for it in self._items()
-                         if it.checkState(0) == Qt.CheckState.Checked]
+        """A scraper.Found per ticked row, under the name it was given here."""
+        self.selected = [
+            dataclasses.replace(it.data(0, Qt.ItemDataRole.UserRole),
+                                name=it.text(0).strip() or it.text(2))
+            for it in self._items() if it.checkState(0) == Qt.CheckState.Checked]
         super().accept()
