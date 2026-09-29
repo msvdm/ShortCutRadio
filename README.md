@@ -1,23 +1,37 @@
 # ShortCutRadio
 
-**A radio and music player that stays out of your way. It lives in a corner
-of the screen and you drive it with the keyboard. Free, MIT-licensed, no
-account, no telemetry.**
+**A radio and music player with overlay and easy keyboard shortcuts.**
 
 <img src="docs/window.png" alt="The ShortCutRadio window: what's playing on top, the list of stations below" width="640">
 
-I wanted music or internet radio while I play or work, without alt-tabbing to
-a player every time I want the next station. ShortCutRadio works like the GPU-stats
-overlay some graphics drivers have. Press a key and a small card appears in a
-corner of the screen showing what's playing. Change station, skip a track or
+Hi, :) 
+I am a sound guy first, geek second and a software engineer never.
+Everything in this repo is written by Opus 5.5. I just tested and prompted until i liked it.
+If that is a hard stop for you - do not waste your time reading the rest.
+
+You're welcome :))
+
+Now that we have that out of the way, let me try to explain what this app is.
+I was tired of listening to the same tracks inside each game.
+I wanted music or internet radio while I play, without alt-tabbing to
+a player or web browser every time I want the next station. And I know that some games allow you
+to add your own songs, but that is too much work for each game at a time.
+
+ShortCutRadio lets you create a playlist of sources - both internet streams and local/network folders,
+that stay with you on every game, app or just general work. Once you start and configure it, 
+it can live in your system tray and just wait for you to turn it on. 
+It doest not interfere with other players, browsers or apps.
+Press a key combo that you define in the settings and a small overlay card appears in a
+corner of the screen showing what's playing. Pause/play, change station, skip a track or
 turn the volume up from the keyboard. Press the key again and it's gone.
 
 <img src="docs/overlay.png" alt="The overlay card: station logo, station name, song title" width="250">
 
 ## What it's good at
 
-- **Stays on top of everything**, fullscreen games included. The card lets
-  your clicks through, so it never gets in the way.
+- **Stays on top of everything**, fullscreen games included (on Windows,
+  in the game's borderless mode). The card lets your clicks through, so it
+  never gets in the way.
 - **Shortcuts that don't steal your keys.** They only work while the overlay
   is showing. Hide it and every key goes back to your other apps, as if
   ShortCutRadio weren't there. Or switch that off, and shortcuts like
@@ -34,13 +48,17 @@ turn the volume up from the keyboard. Press the key again and it's gone.
 
 1. **Sources** tab: add internet stations (**Add Stream**) or music folders
    (**Add Folder**).
-2. **Shortcuts** tab: pick your keys. The defaults are small and out of the
-   way: `[` `]` for volume, `;` `'` for the previous or next station,
-   `\` to play or pause.
+2. **Shortcuts** tab: pick your keys. 
+Only the Overlay onn/off one needs a complicated 3 keys shortcut to avoid
+duplication with the system. It's not ok to be Ctrl+C if you want it work correctly :)
+The rest of the shortcuts can be simple and single keys, like the defaults:
+ `[` `]` for volume, `;` `'` for the previous or next station, `\` to play or pause.
+In the default state these shortcuts work only while the overlay card is on, 
+so they do not collide with your work.
 
    <img src="docs/shortcuts.png" alt="The Shortcuts tab: a key for each action, and the switch that ties them to the overlay" width="640">
 
-   A favourite station can have a key of its own: right-click it on the
+   A favorite station can have a key of its own: right-click it on the
    **Sources** tab and choose **Shortcut…**. The key shows on the right of
    its row and follows the same rules as the other shortcuts.
 
@@ -138,7 +156,7 @@ small gear or menu next to your name.
 
 ## Who wrote this
 
-Claude, Anthropic's AI model, writes the code. I'm a sound engineer, not a
+Claude Opus 5.5, Anthropic's AI model, writes the code. I'm a sound engineer, not a
 programmer: I decide what ShortCutRadio should do, test every change on my own
 machine, and say when something is wrong. The reasons behind the design, and
 the bugs we hit along the way, are written down in [CLAUDE.md](CLAUDE.md).

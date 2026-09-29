@@ -646,16 +646,22 @@ use `actions/setup-python` there.
   owns the display and nothing the compositor draws -- our window
   included -- appears, or it flashes in when we re-raise it (every 3 s)
   and out on the game's next frame: the NFSMW flicker, with or without
-  admin rights. Windows' *fullscreen optimizations* (FSO) run most DX9-11
-  "exclusive" games as borderless under the compositor, which is what
-  lets Game Bar and overlays show; PresentMon's overlay has the same
-  problem with FSO off (GameTechDev/PresentMon#212). The author's PC has
-  FSO off for every game (`HKCU\System\GameConfigStore`,
-  `GameDVR_FSEBehaviorMode = 2`, a common "gaming tweak"). Only injection
-  (Steam, RTSS) draws inside true exclusive fullscreen; Discord's 2025
-  overlay gave it up for a topmost window and says borderless only. The
-  answer is the game's borderless mode (dgVoodoo `FullscreenAttributes =
-  fake` for Ballance: steady, measured) or FSO left on.
+  admin rights. It was *not* fullscreen optimizations: the author turned
+  FSO on and off (`HKCU\System\GameConfigStore`) and nothing changed.
+  NFSMW's WidescreenFix had `WindowedMode = 0`, true exclusive; with
+  `WindowedMode = 4` (borderless fullscreen) the card is steady and the
+  game unchanged -- measured by the author. Ballance the same with dgVoodoo
+  `FullscreenAttributes = fake`. No window outside the game can fix it:
+  NVIDIA's overlay (`nvspcap64.dll`), Steam and RTSS inject into the game
+  and draw in its frames; Discord's 2025 overlay dropped injection for a
+  topmost window, like ours, and says borderless/windowed only; Game Bar
+  sits in a higher z-band, Microsoft-signed, and still needs FSO;
+  PresentMon's overlay has the same problem (GameTechDev/PresentMon#212).
+  So it is an old-game problem: DX12 has no true exclusive mode and most
+  new games default to borderless; a DX9-11 game set to "Fullscreen" can
+  still do it. The answer is the game's borderless mode, and the README
+  says so. A faster or event-driven raise is not a fix here -- over
+  exclusive fullscreen it only flickers faster.
 - **Not measured yet: the hook's time limit.** Windows skips a low-level
   hook that doesn't answer within LowLevelHooksTimeout, and after enough
   timeouts removes it silently. The callback waits for the GIL, so a GUI
@@ -801,10 +807,9 @@ Signing the Windows installer, game hooks
 (e.g. NFSU2 world-load autostart, in the style of the old radio's
 `/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
 and key suppression (pynput `darwin_intercept`), and confirming the overlay
-over fullscreen NFSU2. On Windows: the card over NFSMW with FSO back on
-(Win+G in the game shows Game Bar when FSO is active), and only if it still
-flickers then, a raise on `EVENT_SYSTEM_FOREGROUND` instead of the blind 3 s
-one; UIAccess, if the installer is ever signed.
+over fullscreen NFSU2. On Windows: UIAccess, if the installer is ever
+signed; a raise on `EVENT_SYSTEM_FOREGROUND` only if a *borderless* game
+is ever seen covering the card.
 
 ## Git
 
