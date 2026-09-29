@@ -6,7 +6,7 @@
 
 Hi, :)  
 I am a sound guy first, geek second and a software engineer never.
-Everything in this repo is written by Opus 5.5. I just tested and prompted until i liked it.
+Everything in this repo is written by Opus 5.5. I just tested and prompted until I liked it.
 If that is a hard stop for you - do not waste your time reading the rest.
 
 You're welcome :))
@@ -20,7 +20,7 @@ to add your own songs, but that is too much work for each game at a time.
 ShortCutRadio lets you create a playlist of sources - both internet streams and local/network folders,
 that stay with you on every game, app or just general work. Once you start and configure it, 
 it can live in your system tray and just wait for you to turn it on. 
-It doest not interfere with other players, browsers or apps.
+It does not interfere with other players, browsers or apps.
 Press a key combo that you define in the settings and a small overlay card appears in a
 corner of the screen showing what's playing. Pause/play, change station, skip a track or
 turn the volume up from the keyboard. Press the key again and it's gone.
@@ -48,13 +48,14 @@ turn the volume up from the keyboard. Press the key again and it's gone.
 
 1. **Sources** tab: add internet stations (**Add Stream**) or music folders
    (**Add Folder**).
-2. **Shortcuts** tab: pick your keys. 
-Only the Overlay on/off one needs a complicated 3 keys shortcut to avoid
-duplication with the system. It's not ok to be Ctrl+C if you want it work correctly :)
-The rest of the shortcuts can be simple and single keys, like the defaults:
- `[` `]` for volume, `;` `'` for the previous or next station, `\` to play or pause.
-In the default state these shortcuts work only while the overlay card is on, 
-so they do not collide with your work.
+2. **Shortcuts** tab: pick your keys.
+
+   Only the Overlay on/off one needs a complicated 3 keys shortcut to avoid
+   duplication with the system. It's not ok to be Ctrl+C if you want it to work correctly :)
+   The rest of the shortcuts can be simple and single keys, like the defaults:
+   `[` `]` for volume, `;` `'` for the previous or next station, `\` to play or pause.
+   In the default state these shortcuts work only while the overlay card is on,
+   so they do not collide with your work.
 
    <img src="docs/shortcuts.png" alt="The Shortcuts tab: a key for each action, and the switch that ties them to the overlay" width="640">
 
