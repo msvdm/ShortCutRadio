@@ -178,7 +178,11 @@ The README still tells other people to make a venv: that is their machine.
   keeps the list and its place: the end of a track moves on, looping, and
   next/previous wrap round at both ends. A file that won't play is skipped,
   unless none of them will. A local track never counts as "connecting" (only
-  a stall does), or the status blinked on every track change.
+  a stall does), or the status blinked on every track change. Switching
+  Shuffle on the folder that plays re-orders it at once
+  (`Player._follow_shuffle`, from `sources_changed`): the track goes on,
+  the next one comes from the new order. It used to wait for the next
+  change of source, which looked like a switch that did nothing.
 - **Streams retry** 5 s after an end or an error (`Player._stream_ended`).
   Qt's signals can arrive late from a source already replaced: an end
   counts only while something is loaded and Qt still says EndOfMedia, an

@@ -163,6 +163,7 @@ class Player(QObject):
         self._loaded = False
         self._paused = False
         self._tracks = []               # a folder's files, in play order
+        self._shuffled = False          # the order _tracks is in
         self._pos = -1
         self._failed = 0                # folder tracks that would not play, in a row
         self._meta = {}
@@ -317,7 +318,8 @@ class Player(QObject):
             return
         if is_folder(src):
             self._drop_stream()
-            self._tracks = folder_tracks(src["target"], src.get("shuffle", False))
+            self._shuffled = bool(src.get("shuffle"))
+            self._tracks = folder_tracks(src["target"], self._shuffled)
             if not self._tracks:
                 self._halt("No audio files in this folder")
                 return
@@ -395,7 +397,8 @@ class Player(QObject):
         self.set_volume(self._volume + delta)
 
     def sources_changed(self):
-        """The list was edited. Keep pointing at the same source if it survived.
+        """The list was edited. Keep pointing at the same source if it survived,
+        and follow its shuffle switch if that is what changed.
 
         Matched by identity: the config's own dicts are the sources, so a
         reorder must hand back the same objects (see sources_page.INDEX_ROLE).
@@ -403,6 +406,7 @@ class Player(QObject):
         found = next((i for i, s in enumerate(self.sources) if s is self._current), None)
         if found is not None:
             self._select(found)
+            self._follow_shuffle()
         else:
             # The playing source was removed: stop rather than keep playing
             # something that is no longer in the list.
@@ -411,6 +415,20 @@ class Player(QObject):
                 self._halt()        # which tells everyone
                 return
         self._emit()
+
+    def _follow_shuffle(self):
+        """Shuffle switched on the folder that plays: re-order its tracks now,
+        not at the next change of source. The track that plays goes on; the
+        next one comes from the new order (in order: the one after it)."""
+        src = self.current_source()
+        if not (self._folder and self._loaded) or bool(src.get("shuffle")) == self._shuffled:
+            return
+        tracks = folder_tracks(src["target"], not self._shuffled)
+        if not tracks:
+            return              # the folder is gone meanwhile: keep what plays
+        playing = self._tracks[self._pos] if 0 <= self._pos < len(self._tracks) else None
+        self._tracks, self._shuffled = tracks, not self._shuffled
+        self._pos = tracks.index(playing) if playing in tracks else -1
 
     def shutdown(self):
         self._retry.stop()

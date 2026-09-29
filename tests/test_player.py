@@ -177,3 +177,37 @@ def test_state_phase_follows_one_ladder():
     assert tracks.track == "a"
     assert state().track == "" and state().path is None     # nothing loaded
     assert on.tile == "Fluid" and tracks.tile == "m"        # from the address
+
+
+# ---------------------------------------------------------- shuffle, live
+def test_shuffle_follows_the_switch_while_a_folder_plays(tmp_path, monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+    from src.core.player import Player
+    QCoreApplication.instance() or QCoreApplication([])
+    names = [f"{c}.mp3" for c in "abcdefghij"]
+    for n in names:
+        (tmp_path / n).write_bytes(b"")
+    opened = []                             # what Qt was asked to load: nothing plays
+    monkeypatch.setattr(Player, "_open", lambda self, url: opened.append(url.toLocalFile()))
+    src = {"name": "Music", "kind": "folder", "target": str(tmp_path), "shuffle": False}
+    player = Player([src], volume=0)
+    player.play_source(0)
+    player.next_track()
+    player.next_track()
+    playing = player.snapshot().path
+    assert os.path.basename(playing) == "c.mp3" and len(opened) == 3
+
+    src["shuffle"] = True                   # the context menu's Shuffle, via edit_source
+    player.sources_changed()
+    s = player.snapshot()
+    assert s.path == playing and len(opened) == 3       # the track goes on, not restarted
+    assert sorted(player._tracks) == sorted(folder_tracks(str(tmp_path)))
+    assert player._tracks != folder_tracks(str(tmp_path))   # 10 tracks: 1 in 3.6M stays put
+    assert s.track_count == 10 and player._tracks[s.track_pos - 1] == playing
+
+    src["shuffle"] = False                  # and back: the one after it, in order
+    player.sources_changed()
+    assert player.snapshot().path == playing and len(opened) == 3
+    player.next_track()
+    assert os.path.basename(opened[-1]) == "d.mp3"
+    player.shutdown()
