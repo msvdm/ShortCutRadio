@@ -11,7 +11,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from .core import applog
+from .core import applog, elevation
 from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, all_bindings, pretty, source_index
 from .core.net import clean_site
@@ -33,12 +33,12 @@ SAVE_DELAY_MS = 1500
 
 
 class App:
-    def __init__(self, qapp, argv):
+    def __init__(self, qapp, argv, config):
         self.qapp = qapp
         self.icon = make_icon()
         qapp.setWindowIcon(self.icon)
         install_icon()          # so the desktop's menu shows it too
-        self.config = Config()
+        self.config = config
         cfg = self.config
         self.window = self.tray = None
         self.apply_theme()
@@ -229,6 +229,21 @@ class App:
         self.window.shortcuts.refresh()
         self.save()
 
+    def set_run_as_admin(self, on):
+        """On: start again as administrator now; the new copy closes this
+        one (--replace). Off: from the next start -- going back down from
+        inside would take another program's token."""
+        self.config["run_as_admin"] = bool(on)
+        self.save()
+        declined = False
+        if on and not elevation.is_elevated():
+            if elevation.relaunch(["--replace"]):
+                return
+            self.config["run_as_admin"] = False
+            self.save()
+            declined = True
+        self.window.shortcuts.refresh(admin_declined=declined)
+
     def _sources_edited(self):
         # The rows first: the player's state, emitted next, is what marks
         # the one that is playing.
@@ -331,18 +346,34 @@ def main(argv=None):
         # stop a portable copy elsewhere; this reaches only the same config.
         _tell_running(b"quit", until_gone=True)
         return 0
-    if _tell_running(b"show"):
+    if "--replace" in argv:
+        # Started again as administrator by the copy running now: take over.
+        _tell_running(b"quit", until_gone=True)
+    elif _tell_running(b"show"):
         print("ShortCutRadio is already running -- showing its window.", flush=True)
         return 0
+    config = Config()
+    admin_declined = False
+    if config["run_as_admin"] and elevation.available and not elevation.is_elevated():
+        if elevation.relaunch([a for a in argv[1:] if a != "--replace"]):
+            return 0
+        admin_declined = True       # said no: run as we are
     # Only the copy that stays opens the log: a second launch that just said
     # "show" must not rotate the running copy's log from under it.
     applog.start(data_dir())
+    if admin_declined:
+        print("[admin] not allowed to start as administrator; running without", flush=True)
+    elif elevation.is_elevated():
+        print("[admin] running as administrator", flush=True)
 
     QLocalServer.removeServer(INSTANCE_NAME)     # stale socket after a crash
     server = QLocalServer()
+    # Open to this user at any level: an elevated copy's pipe would otherwise
+    # refuse a normal launch ("show") and the uninstaller ("quit").
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
     server.listen(INSTANCE_NAME)
 
-    app = App(qapp, argv)
+    app = App(qapp, argv, config)
 
     def on_message(data):
         if b"quit" in data.split():

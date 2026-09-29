@@ -83,6 +83,14 @@ On Windows the keyboard's media keys are ordinary shortcuts: bind Play/Pause
 to one and, while your shortcuts work (overlay on, or always), it controls
 ShortCutRadio and nothing else. ShortCutRadio also shows up in the volume menu and on the lock screen.
 
+**Games on Windows.** Some games run as administrator. Windows then keeps
+their keys from every program that doesn't, so ShortCutRadio's shortcuts do
+nothing in them. Turn on **Run as administrator** at the bottom of the
+Shortcuts tab: ShortCutRadio starts again with those rights, and Windows asks
+your permission each time it starts. A game in *exclusive fullscreen* can
+hide the card or make it flicker; choose the game's borderless or "windowed
+fullscreen" mode if it has one.
+
 **Linux:**
 
 - **`shortcutradio_*_amd64.deb`**, the one most people want. Double-click it
@@ -120,7 +128,8 @@ python3 -m venv .venv
 ## Status
 
 It works well on Linux (X11) and I use it every day. On Windows it works,
-but the overlay hasn't been tried over a fullscreen game there yet.
+in games too; over a game in exclusive fullscreen the card can still flicker
+(see "Games on Windows" above).
 macOS is next.
 
 On Linux with Wayland the player works but the shortcuts don't: they need

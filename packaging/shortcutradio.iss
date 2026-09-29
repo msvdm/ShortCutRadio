@@ -60,3 +60,18 @@ Filename: "{app}\shortcutradio.exe"; Parameters: "--quit"; Flags: runhidden wait
 
 [Run]
 Filename: "{app}\shortcutradio.exe"; Description: "{cm:LaunchProgram,ShortCutRadio}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// A copy running as administrator (its "Run as administrator" switch) is out
+// of the Restart Manager's reach when Setup is not: ask it to close the way
+// uninstalling does, before files are replaced.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Exe: String;
+  Code: Integer;
+begin
+  Exe := ExpandConstant('{app}\shortcutradio.exe');
+  if FileExists(Exe) then
+    Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := '';
+end;

@@ -9,6 +9,7 @@ import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QWidget
 
+from ..core import elevation
 from ..core.hotkeys import (ALWAYS_LIVE, SUPER, has_modifier, pretty, recorded,
                             works_everywhere)
 from .dialogs import FramelessDialog, inform, wrapped_label
@@ -57,6 +58,14 @@ SOURCE_HELP_OFF = (f"Shortcuts work all the time now, so it needs Ctrl, Alt or {
 SOURCE_IDLE = (f"A single key waits while shortcuts work everywhere: record it with "
                f"Ctrl, Alt or {SUPER}, or switch \"{SWITCH_TEXT}\" back on.")
 SOURCE_TIP = "Right-click the source, then Shortcut…, to change it."
+ADMIN_TEXT = "Run as administrator"
+# The three texts under it, about the same length for the same reason.
+ADMIN_HELP = ("For games that run as administrator: Windows keeps their keys from every "
+              "program that doesn't. Windows asks first, each time ShortCutRadio starts.")
+ADMIN_DECLINED = ("Windows did not allow it, so ShortCutRadio runs as a normal program, "
+                  "and games that run as administrator keep their keys from it.")
+ADMIN_UNTIL_RESTART = ("Off from the next start. Until then ShortCutRadio keeps running as "
+                       "administrator, and games that run that way still work with it.")
 # Qt still gets its own copy of a key the listener recorded (X11), and it can
 # arrive just after the recording ended: Esc would then close the popup.
 CAPTURE_ECHO_S = 0.4
@@ -190,29 +199,57 @@ class ShortcutsPage(QWidget):
             grid.addWidget(warn, nrows, 0, 1, 2)
             nrows += 1
         # The overlay rule, as a switch: the pill, its title, and what it means.
-        rule = QGridLayout()
-        rule.setHorizontalSpacing(SWITCH_W - PillSwitch.W)
-        rule.setVerticalSpacing(4)
-        self.rule_switch = PillSwitch()
-        self.rule_switch.toggled.connect(app.set_shortcuts_need_overlay)
-        title = QLabel(SWITCH_TEXT)
-        title.setObjectName("toggleLabel")
-        self.help_label = wrapped_label("", WRAP_W - SWITCH_W)
-        self.help_label.setObjectName("helpText")
-        rule.addWidget(self.rule_switch, 0, 0)
-        rule.addWidget(title, 0, 1)
-        rule.addWidget(self.help_label, 1, 1)
-        rule.setColumnStretch(2, 1)
-        grid.addLayout(rule, nrows, 0, 1, 2)
-        grid.setRowStretch(nrows + 1, 1)
+        self.rule_switch, self.help_label = self._switch(
+            grid, nrows, SWITCH_TEXT, app.set_shortcuts_need_overlay)
+        nrows += 1
+        # Windows: for games run as administrator (see core/elevation.py).
+        self.admin_switch = self.admin_help = None
+        self.admin_declined = False
+        if elevation.available:
+            self.admin_switch, self.admin_help = self._switch(
+                grid, nrows, ADMIN_TEXT, app.set_run_as_admin)
+            nrows += 1
+        grid.setRowStretch(nrows, 1)
         self.refresh()
 
-    def refresh(self):
+    @staticmethod
+    def _switch(grid, row, text, on_toggled):
+        """A pill, its title, and what it means beneath."""
+        box = QGridLayout()
+        box.setHorizontalSpacing(SWITCH_W - PillSwitch.W)
+        box.setVerticalSpacing(4)
+        switch = PillSwitch()
+        switch.toggled.connect(on_toggled)
+        title = QLabel(text)
+        title.setObjectName("toggleLabel")
+        help_label = wrapped_label("", WRAP_W - SWITCH_W)
+        help_label.setObjectName("helpText")
+        box.addWidget(switch, 0, 0)
+        box.addWidget(title, 0, 1)
+        box.addWidget(help_label, 1, 1)
+        box.setColumnStretch(2, 1)
+        grid.addLayout(box, row, 0, 1, 2)
+        return switch, help_label
+
+    @staticmethod
+    def _set_checked(switch, on):
+        switch.blockSignals(True)
+        switch.setChecked(on)
+        switch.blockSignals(False)
+
+    def refresh(self, admin_declined=None):
         need = self.app.config["shortcuts_need_overlay"]
-        self.rule_switch.blockSignals(True)
-        self.rule_switch.setChecked(need)
-        self.rule_switch.blockSignals(False)
+        self._set_checked(self.rule_switch, need)
         self.help_label.setText(HELP_ON if need else HELP_OFF)
+        if self.admin_switch:
+            if admin_declined is not None:
+                self.admin_declined = admin_declined
+            on, up = self.app.config["run_as_admin"], elevation.is_elevated()
+            self._set_checked(self.admin_switch, on)
+            self.admin_help.setText(
+                ADMIN_UNTIL_RESTART if up and not on
+                else ADMIN_DECLINED if self.admin_declined or (on and not up)
+                else ADMIN_HELP)
         sc = self.app.config["shortcuts"]
         hk = self.app.hotkeys
         for row in self.rows:

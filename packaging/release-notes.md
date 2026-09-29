@@ -10,6 +10,11 @@ screen, over games too, and that you drive with the keyboard.
   `shortcutradio_*_amd64.deb`, double-click to install. Or take the
   `.tar.gz` for a portable folder that keeps its settings inside it.
 
+**Games on Windows:** for a game that runs as administrator, turn on
+**Run as administrator** at the bottom of the Shortcuts tab, or its keys
+never reach ShortCutRadio. Over a game in exclusive fullscreen the card can
+flicker; use the game's borderless mode if it has one.
+
 The Windows installer isn't signed yet, so Windows may warn that it comes
 from an unknown publisher: choose **More info**, then **Run anyway**.
 

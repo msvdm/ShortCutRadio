@@ -49,6 +49,7 @@ src/core/levels.py        the level meters' numbers (pure, so they can be tested
 src/core/hotkeys.py       what a key means: gating + recording, the same on every platform
 src/core/keygrab.py       X11 keyboard (XKeys): pynput hears, passive grabs take live keys
 src/core/keygrab_win.py   Windows: one low-level keyboard hook that hears, fires and takes
+src/core/elevation.py     Windows: am I administrator, start me again as one
 src/core/nowplaying.py    the desktop's Now Playing seam (MediaSession), shared by:
 src/core/mpris.py         media keys: ShortCutRadio as an MPRIS player (QtDBus), sound applet
 src/core/mediakeys.py     media keys: the settings daemon's claim (jeepney)
@@ -64,7 +65,7 @@ src/gui/shortcuts_page.py   key caps and capture
 src/gui/overlay_page.py     the card's look
 src/gui/artwork.py        which picture a source gets, cached on disk, fetched off-thread
 src/gui/                  add_stream dialog, overlay, tray (icon drawn in code)
-tests/                    pytest, one file per area: hotkeys, streams, player, art
+tests/                    pytest, one file per area: hotkeys, streams, player, art, elevation
 README.md, LICENSE        the public face (MIT); docs/ holds its screenshots
 requirements.txt          pip dependencies (PySide6 brings the player and its FFmpeg)
 shortcutradio.spec        PyInstaller: one folder, dist/ShortCutRadio/
@@ -420,6 +421,36 @@ use `actions/setup-python` there.
   first page offers all users), Start menu entry, optional desktop icon,
   settings left in %APPDATA% on uninstall. Unsigned for now: SmartScreen
   warns, and the README says how to get past it.
+- **Games run as administrator: a "Run as administrator" switch** (Shortcuts
+  tab, Windows only, `run_as_admin`, off by default). While an elevated
+  window is in front, Windows calls no normal program's low-level hook
+  (UIPI; measured with NFSMW, which is set to run as admin): every shortcut
+  was dead there, the overlay toggle too. Microsoft's list of what reads
+  input across that line -- hooks, raw input, GetAsyncKeyState -- all need
+  the reader elevated or UIAccess, so no trick gets round it.
+  RegisterHotKey does cross, but the game still kept bare, Shift+ and Alt+
+  keys (measured); that fallback was built and dropped. UIAccess would be
+  the better fix (no elevation, and its windows sit in the band above every
+  topmost one), but it needs an exe signed by a trusted CA, installed in
+  Program Files; the author chose the switch, the way PowerToys and OBS do
+  it, and proved it by running the 1.0.0 exe as admin over NFSMW. On:
+  `elevation.relaunch(["--replace"])` (ShellExecuteEx "runas", so Windows
+  asks); the new copy says "quit" to the old one and waits for it to go,
+  then starts. Declined: the switch goes back off. At start, a normal
+  process with the setting on relaunches itself elevated with the same
+  arguments, before the log and the server. Off takes effect at the next
+  start (going back down from inside needs another program's token). The
+  cost: the whole app -- network, FFmpeg, page scraper -- runs as admin,
+  and there is a UAC prompt at every start on a normal machine (none on the
+  author's PC: `ConsentPromptBehaviorAdmin = 0`). A standard user who
+  elevates with another admin account gets that account's %APPDATA%.
+- **The single-instance pipe is open to this user at any level**
+  (`QLocalServer.UserAccessOption`). An elevated copy's pipe refuses a
+  normal process otherwise -- measured: a Start-menu click then started a
+  second copy, and `--quit` could not reach the elevated one. For the same
+  reason Setup, which runs unelevated and whose Restart Manager cannot
+  close an elevated copy, runs the installed `shortcutradio.exe --quit`
+  first (`PrepareToInstall`).
 - **Closing for an installer.** Setup's Restart Manager closes a running
   copy on upgrade (Qt ends the loop on WM_ENDSESSION, so `main` saves after
   `exec()` returns -- measured: a volume change still waiting on the save
@@ -611,6 +642,20 @@ use `actions/setup-python` there.
 - **A second global hook installed later sees keys first**, and one that
   swallows a key means ours never hears it. Unlike X11's BadAccess there is
   no way to find out, so the Shortcuts tab's ⚠ never shows on Windows.
+- **The card can't show over legacy exclusive fullscreen.** There the game
+  owns the display and nothing the compositor draws -- our window
+  included -- appears, or it flashes in when we re-raise it (every 3 s)
+  and out on the game's next frame: the NFSMW flicker, with or without
+  admin rights. Windows' *fullscreen optimizations* (FSO) run most DX9-11
+  "exclusive" games as borderless under the compositor, which is what
+  lets Game Bar and overlays show; PresentMon's overlay has the same
+  problem with FSO off (GameTechDev/PresentMon#212). The author's PC has
+  FSO off for every game (`HKCU\System\GameConfigStore`,
+  `GameDVR_FSEBehaviorMode = 2`, a common "gaming tweak"). Only injection
+  (Steam, RTSS) draws inside true exclusive fullscreen; Discord's 2025
+  overlay gave it up for a topmost window and says borderless only. The
+  answer is the game's borderless mode (dgVoodoo `FullscreenAttributes =
+  fake` for Ballance: steady, measured) or FSO left on.
 - **Not measured yet: the hook's time limit.** Windows skips a low-level
   hook that doesn't answer within LowLevelHooksTimeout, and after enough
   timeouts removes it silently. The callback waits for the GIL, so a GUI
@@ -680,6 +725,13 @@ use `actions/setup-python` there.
   box) and `Hotkeys.start` stubbed, then `grab()` each tab and popup to PNG.
   The offscreen screen is 800 px wide divided by the factor, so 1.5 also
   shows `keep_on_screen` on a screen smaller than the window.
+- **Elevated test copies:** an elevated start ("runas") gets a fresh
+  environment, so a scratch `APPDATA` doesn't reach it -- it would find the
+  real config and say "show" to the real ShortCutRadio. Test elevation on a
+  copy of `src/` + `shortcutradio.py` with `shortcutradio.portable` beside
+  it. A normal process can't stop an elevated one: `--quit`, or
+  `Start-Process powershell -Verb RunAs` for `Stop-Process -Id`. This PC
+  never shows the UAC prompt, so the "declined" path is untested here.
 - Scratch config: `$env:APPDATA = "<scratch dir>"` before starting (the
   counterpart of `XDG_CONFIG_HOME=/tmp/x`). Stop a test instance with
   `shortcutradio.py --quit` under the same `APPDATA`, or
@@ -749,8 +801,10 @@ Signing the Windows installer, game hooks
 (e.g. NFSU2 world-load autostart, in the style of the old radio's
 `/proc/<pid>/fd` check), macOS: media keys (Now Playing, same seam as `Mpris`)
 and key suppression (pynput `darwin_intercept`), and confirming the overlay
-over fullscreen NFSU2 -- and on Windows over a game in exclusive fullscreen,
-which bypasses the compositor the overlay draws through.
+over fullscreen NFSU2. On Windows: the card over NFSMW with FSO back on
+(Win+G in the game shows Game Bar when FSO is active), and only if it still
+flickers then, a raise on `EVENT_SYSTEM_FOREGROUND` instead of the blind 3 s
+one; UIAccess, if the installer is ever signed.
 
 ## Git
 

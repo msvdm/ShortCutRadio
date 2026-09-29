@@ -33,6 +33,9 @@ DEFAULTS = {
     # True: shortcuts are live only while the overlay is on. False: always,
     # but only those with Ctrl/Alt/Super (hotkeys.works_everywhere).
     "shortcuts_need_overlay": True,
+    # Windows: start as administrator, for games that run that way (their
+    # keys never reach a normal program; see core/elevation.py).
+    "run_as_admin": False,
     # Key name -> X keysym, learned from the keys actually pressed. Only keys
     # outside Latin-1 need it; see keygrab.XKeys._learn_keysym.
     "keysyms": {},
