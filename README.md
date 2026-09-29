@@ -130,6 +130,11 @@ Please open an [issue](https://github.com/msvdm/ShortCutRadio/issues). Say what 
 expected, what happened, and which Linux and desktop, or which Windows, you
 use.
 
+If something went wrong, please attach ShortCutRadio's log file,
+`shortcutradio.log`. It is in `%APPDATA%\ShortCutRadio` on Windows, in
+`~/.config/ShortCutRadio` on Linux, or in the `data` folder of a portable
+copy. The one before it, if there is one, is `shortcutradio.log.1`.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Use it, change it, share it; just keep the

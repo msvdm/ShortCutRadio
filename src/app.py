@@ -11,6 +11,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
+from .core import applog
 from .core.config import Config, data_dir, normalize_theme
 from .core.hotkeys import Hotkeys, all_bindings, pretty, source_index
 from .core.net import clean_site
@@ -333,6 +334,9 @@ def main(argv=None):
     if _tell_running(b"show"):
         print("ShortCutRadio is already running -- showing its window.", flush=True)
         return 0
+    # Only the copy that stays opens the log: a second launch that just said
+    # "show" must not rotate the running copy's log from under it.
+    applog.start(data_dir())
 
     QLocalServer.removeServer(INSTANCE_NAME)     # stale socket after a crash
     server = QLocalServer()

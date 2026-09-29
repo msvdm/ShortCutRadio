@@ -2,7 +2,10 @@ import json
 import os
 import random
 
-from src.core import levels
+import io
+import sys
+
+from src.core import applog, levels
 from src.core.config import (Config, normalize_theme, opacity_from_percent,
                               transparency_percent)
 from src.core.mpris import metadata, player_props
@@ -211,3 +214,34 @@ def test_shuffle_follows_the_switch_while_a_folder_plays(tmp_path, monkeypatch):
     player.next_track()
     assert os.path.basename(opened[-1]) == "d.mp3"
     player.shutdown()
+
+
+def test_log_keeps_one_old_log(tmp_path):
+    log = tmp_path / applog.NAME
+    log.write_bytes(b"x" * (applog.MAX_BYTES + 1))
+    applog.open_log(str(tmp_path)).close()
+    applog.open_log(str(tmp_path)).close()      # small now: appended, not rotated
+    assert sorted(p.name for p in tmp_path.iterdir()) == [applog.NAME, applog.NAME + ".1"]
+    assert log.read_text(encoding="utf-8").count("=== ") == 2
+    (tmp_path / (applog.NAME + ".1")).write_bytes(b"old")
+    log.write_bytes(b"y" * (applog.MAX_BYTES + 1))
+    applog.open_log(str(tmp_path)).close()
+    assert (tmp_path / (applog.NAME + ".1")).read_bytes()[:1] == b"y"
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_log_tees_to_the_console(tmp_path, monkeypatch):
+    monkeypatch.setattr(applog.faulthandler, "enable", lambda f: None)
+    console = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", console)
+    monkeypatch.setattr(sys, "stderr", None)        # the Windows build: no console
+    f = applog.start(str(tmp_path))
+    try:
+        print("[test] hello", flush=True)
+        sys.stderr.write("boom\n")
+        assert sys.stderr is f
+    finally:
+        f.close()
+    assert console.getvalue() == "[test] hello\n"
+    text = (tmp_path / applog.NAME).read_text(encoding="utf-8")
+    assert "[test] hello\nboom\n" in text

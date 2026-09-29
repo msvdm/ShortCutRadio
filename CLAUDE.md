@@ -37,6 +37,7 @@ ported (keys, media, builds); macOS is not started.
 shortcutradio.py          entry; single instance via QLocalServer ("show" message)
 src/app.py                wires everything; quit = save, stop, os._exit
 src/core/config.py        JSON config; portable mode if shortcutradio.portable sits next to the app
+src/core/applog.py        shortcutradio.log in the data folder: stdout/stderr tee, faulthandler
 src/core/sources.py       source = {name, kind: stream|folder, target, shuffle}; names from URLs
 src/core/player.py        Qt Multimedia (QMediaPlayer); one `changed` signal with a PlayerState
 src/core/relay.py         localhost stream relay: ICY/Ogg titles out, bare audio in to Qt
@@ -422,6 +423,18 @@ The README still tells other people to make a venv: that is their machine.
   `shortcutradio.exe --quit`, which sends "quit" to the instance on the
   same config over the single-instance socket and waits until it is gone.
   Killing by image name would also stop a portable copy elsewhere.
+
+- **The app keeps a log** (`core/applog.py`): `shortcutradio.log` in
+  `data_dir()`, so a portable copy keeps it in `data/`. The Windows build
+  has no console -- stdout and stderr are None -- so every print and
+  traceback went nowhere, and a user opening an issue had nothing to
+  attach. stdout and stderr are teed into the file (they *are* the file
+  where there is no console); uncaught exceptions, PySide slot errors and
+  thread errors already go to stderr, and faulthandler writes a hard crash.
+  Past 512 KB it moves to `.log.1` on start: one old log, never more. It
+  starts after the single-instance check, so a second launch that only
+  says "show" doesn't rotate the running copy's log. A log that can't be
+  opened means no log, not no app.
 
 ## Traps — measured, do not re-litigate
 
