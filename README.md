@@ -59,12 +59,45 @@ bring the window back.
 
 ## Run it
 
-ShortCutRadio runs on **Linux with X11** (Linux Mint, Ubuntu and similar) and
-on **Windows 10 and 11**.
+ShortCutRadio runs on **Linux with X11** (Linux Mint, Ubuntu 22.04 or newer
+and similar) and on **Windows 10 and 11**.
 
-### Linux
+### Download
 
-You need Python 3.10 or newer.
+Get it from the [latest release](https://github.com/msvdm/ShortCutRadio/releases/latest).
+Everything it needs is inside; there is nothing else to install.
+
+**Windows:**
+
+- **`ShortCutRadio-*-windows-x64-setup.exe`**, the installer, is the one
+  most people want. It puts ShortCutRadio in the Start menu, needs no
+  administrator rights, and uninstalls from Settings > Apps. Your settings
+  stay when you uninstall.
+- **`ShortCutRadio-*-windows-x64.zip`**, a portable folder. Unzip it anywhere
+  and run `shortcutradio.exe` inside. It keeps its settings in the folder.
+
+The installer isn't signed yet, so Windows may warn that it comes from an
+unknown publisher: choose **More info**, then **Run anyway**.
+
+On Windows the keyboard's media keys are ordinary shortcuts: bind Play/Pause
+to one and, while your shortcuts work (overlay on, or always), it controls
+ShortCutRadio and nothing else. ShortCutRadio also shows up in the volume menu and on the lock screen.
+
+**Linux:**
+
+- **`shortcutradio_*_amd64.deb`**, the one most people want. Double-click it
+  to install, and ShortCutRadio appears in your menu. Remove it the same way
+  as any other program.
+- **`ShortCutRadio-*-linux-x64.tar.gz`**, a portable folder. Unpack it
+  anywhere and run `shortcutradio` inside. It keeps its settings in the
+  folder, so it can live on a USB stick.
+
+Started with `--hidden`, ShortCutRadio goes straight to the tray, which is
+handy for autostart.
+
+### From the source code
+
+On Linux you need Python 3.10 or newer.
 
 ```bash
 sudo apt install python3-venv git
@@ -75,45 +108,19 @@ python3 -m venv .venv
 .venv/bin/python shortcutradio.py
 ```
 
-- `shortcutradio.py --hidden` starts it straight in the tray, which is handy for
-  autostart.
 - **Portable mode:** put an empty file named `shortcutradio.portable` next to
   `shortcutradio.py`, and the settings will live in a `data` folder inside the app
   folder instead of your home folder. Then the whole folder can move to
   another machine.
-
-**Build it yourself:** `packaging/build.sh` makes two files in `dist/`:
-
-- **`shortcutradio_*_amd64.deb`**, the one most people want. Double-click it to
-  install, and ShortCutRadio appears in your menu. Remove it the same way as any
-  other program.
-- **`ShortCutRadio-*-linux-x64.tar.gz`**, a portable folder. Unpack it anywhere
-  and run `shortcutradio` inside. It keeps its settings in the folder, so it can
-  live on a USB stick.
-
-### Windows
-
-Build it yourself on Windows: `packaging\build.ps1` makes two files in
-`dist\`:
-
-- **`ShortCutRadio-*-windows-x64-setup.exe`**, the installer. It puts
-  ShortCutRadio in the Start menu, needs no administrator rights, and
-  uninstalls from Settings > Apps. Your settings stay when you uninstall.
-- **`ShortCutRadio-*-windows-x64.zip`**, a portable folder. Unzip it anywhere
-  and run `shortcutradio.exe` inside. It keeps its settings in the folder.
-
-Both include everything they need. The installer isn't signed yet,
-so Windows may warn that it comes from an unknown publisher: choose
-**More info**, then **Run anyway**.
-
-On Windows the keyboard's media keys are ordinary shortcuts: bind Play/Pause
-to one and, while your shortcuts work (overlay on, or always), it controls
-ShortCutRadio and nothing else. ShortCutRadio also shows up in the volume menu and on the lock screen.
+- **Build the downloads yourself:** `packaging/build.sh` on Linux makes the
+  `.deb` and the `.tar.gz` in `dist/`; `packaging\build.ps1` on Windows
+  makes the installer and the `.zip` (it needs
+  [Inno Setup 6](https://jrsoftware.org/isinfo.php)).
 
 ## Status
 
-It works well on Linux (X11) and I use it every day. Windows is new: it
-works, but the overlay hasn't been tried over a fullscreen game there yet.
+It works well on Linux (X11) and I use it every day. On Windows it works,
+but the overlay hasn't been tried over a fullscreen game there yet.
 macOS is next.
 
 On Linux with Wayland the player works but the shortcuts don't: they need

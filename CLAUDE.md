@@ -730,6 +730,12 @@ use `actions/setup-python` there.
   `git tag v<version>` and `git push origin v<version>`. Running the
   workflow by hand (`gh workflow run release.yml`) builds without
   publishing -- a dry run; `gh run download` fetches its files.
+  The Linux job strips setup-python's Python before building: it keeps
+  its symbols, and libpython alone made the tarball 90 MB against 77 here.
+  Stripped, the runner's files match this machine's (77 / 61 MB; Windows
+  41 / 30 MB). The runner has no display, so PyInstaller's pynput hook
+  warns; the spec's `PYNPUT_XORG` covers it (checked in the dry run's
+  archive).
 - **The .deb's glibc floor is read from the build** (`build-deb.sh`: the
   highest `GLIBC_x.y` that `objdump -T` finds in the folder), not written
   down: it was a literal 2.39, this Mint's, which kept the package off any
