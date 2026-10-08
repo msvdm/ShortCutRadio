@@ -523,6 +523,22 @@ use `actions/setup-python` there.
   grabbed and leaked into the focused app. The keysym pynput reports
   (`KeyCode.vk`) is learned from every press, kept in the config (`keysyms`)
   and preferred by `keygrab.keysym_for`.
+- **Modifiers come from the X event, not from counting modifier keys.**
+  Because of that same level-4 reading, the Alt key with Shift down reads as
+  Meta_L (keycode 64 is `Alt_L Meta_L` here). The listener used to count
+  modifiers from their own presses and releases, so with the author's overlay
+  key, Alt+Shift+Q: Alt let go before Shift was never counted as released,
+  and every bare key after it was heard as Alt+key -- still grabbed as the
+  bare key, so the app in front never got it and nothing fired. Shift pressed
+  before Alt was the other half: Alt never counted, the toggle heard as
+  Shift+Q. Release order is a coin toss, which was "shortcuts get blocked, a
+  few overlay restarts fix it". Now `keygrab._Listener` keeps each event's
+  `state` (pynput reads it but never hands it on) and the modifiers are its
+  ControlMask/Mod1/Shift/Mod4 bits (`MOD_MASKS`), the same masks the grab is
+  made with, so the two cannot disagree; a modifier key is told by its keysym
+  at any level (`MOD_KEYSYMS`). Measured both orders with xtest, before and
+  after. `_Listener` overrides pynput's private `_handle_message`; a test
+  checks it is still there, with pynput on a display.
 - **The active layout does not change what matches.** Cinnamon switches
   layouts by locking the XKB group, and pynput ignores the group (it reads
   index 0/1 of the keycode's keysym list), so the E key reports `e` in both

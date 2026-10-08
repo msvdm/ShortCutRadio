@@ -1,6 +1,8 @@
 import enum
 import time
 
+import pytest
+
 from src.core import keygrab
 from src.core.hotkeys import (Hotkeys, all_bindings, has_modifier, is_media, make_combo,
                               parse_combo, pretty, recorded, source_action, source_index,
@@ -38,20 +40,26 @@ def test_what_a_recording_asks_for():
 
 # ------------------------------------------------------------------ X11
 # The listener needs a keyboard; its bookkeeping does not, so the keys are
-# handed to XKeys directly, exactly as pynput would deliver them. Where pynput
-# is missing (Windows), a stand-in for the two types it hands over does.
+# handed to XKeys directly, exactly as pynput would deliver them, with the
+# modifier state X sends along. Where pynput is missing (Windows), a stand-in
+# for the two types it hands over does; a key's vk is its X keysym.
 class _Keyboard:
-    Key = enum.Enum("Key", ["ctrl_l", "alt_l", "media_play_pause"])
-
     class KeyCode:
         def __init__(self, vk=None, char=None):
             self.vk, self.char = vk, char
+
+    Key = enum.Enum("Key", {"ctrl_l": KeyCode(0xFFE3), "alt_l": KeyCode(0xFFE9),
+                            "shift_l": KeyCode(0xFFE1),
+                            "media_play_pause": KeyCode(0x1008FF14)})
 
 
 if keygrab.keyboard is None:
     keygrab.keyboard = _Keyboard
 keyboard = keygrab.keyboard
-CTRL, ALT = keyboard.Key.ctrl_l, keyboard.Key.alt_l
+CTRL, ALT, SHIFT = keyboard.Key.ctrl_l, keyboard.Key.alt_l, keyboard.Key.shift_l
+META = keyboard.KeyCode(vk=0xFFE7)      # the Alt key, as pynput reads it with Shift down
+MASK = {CTRL: 4, ALT: 8, META: 8, SHIFT: 1}     # X's ControlMask, Mod1Mask, ShiftMask
+CTRL_DOWN = MASK[CTRL]
 
 
 def _x11(media=False, **bindings):
@@ -67,9 +75,13 @@ def _x11(media=False, **bindings):
 
 
 def _tap(xk, *keys):
-    """As pynput 1.8 calls back: (key, injected)."""
+    """Press in order, release in reverse. Each press carries the modifiers
+    already down, as X's event state does; a release is as pynput 1.8 calls
+    back, (key, injected)."""
+    state = 0
     for k in keys:
-        xk._press(k, False)
+        xk._press(k, state)
+        state |= MASK.get(k, 0)
     for k in reversed(keys):
         xk._release(k, False)
 
@@ -84,20 +96,20 @@ def test_auto_repeat_does_not_repeat_the_action(monkeypatch):
     clock = _clock(monkeypatch)
     hk, xk, fired = _x11(play_pause="ctrl+e", vol_up="]")
     hk.live = True
-    xk._press(CTRL)
+    xk._press(CTRL, 0)
     e = keyboard.KeyCode(char="e", vk=101)
-    xk._press(e)
+    xk._press(e, CTRL_DOWN)
     clock[0] += 0.5             # X waits half a second before it repeats ...
-    xk._press(e)
+    xk._press(e, CTRL_DOWN)
     for _ in range(20):         # ... then repeats as presses, with no release
         clock[0] += 0.03
-        xk._press(e)
+        xk._press(e, CTRL_DOWN)
     xk._release(e)
     xk._release(CTRL)
     assert fired == ["play_pause"]
     clock[0] += 0.3             # a real second press is not a repeat
-    xk._press(CTRL)
-    xk._press(e)
+    xk._press(CTRL, 0)
+    xk._press(e, CTRL_DOWN)
     assert fired == ["play_pause", "play_pause"]
 
 
@@ -105,9 +117,49 @@ def test_volume_still_rides_the_repeat():
     hk, xk, fired = _x11(vol_up="]")
     hk.live = True
     for _ in range(3):
-        xk._press(keyboard.KeyCode(char="]", vk=93))
+        xk._press(keyboard.KeyCode(char="]", vk=93), 0)
         time.sleep(0.1)
     assert fired == ["vol_up"] * 3
+
+
+def test_alt_let_go_before_shift_is_not_left_held():
+    # pynput names a modifier key by the level the others select: the Alt
+    # key let go while Shift is still down reads as Meta_L. Counted from
+    # presses and releases, Alt stayed "held", and P became Alt+P: grabbed
+    # as a bare P, matched as nothing.
+    hk, xk, fired = _x11(overlay="alt+shift+q", play_pause="p")
+    hk.live = True
+    q, p = keyboard.KeyCode(char="q", vk=113), keyboard.KeyCode(char="p", vk=112)
+    xk._press(ALT, 0)
+    xk._press(SHIFT, MASK[ALT])
+    xk._press(q, MASK[ALT] | MASK[SHIFT])
+    xk._release(q)
+    xk._release(META)
+    xk._release(SHIFT)
+    assert fired == ["overlay"]
+    _tap(xk, p)
+    assert fired == ["overlay", "play_pause"]
+
+
+def test_shift_before_alt_still_counts_alt():
+    # The other order: the Alt key pressed under Shift reads as Meta_L, so
+    # it was never counted, Alt+Shift+Q was heard as Shift+Q, and a
+    # recording took the Alt key itself for the key ("shift+vk65511").
+    hk, xk, fired = _x11(overlay="alt+shift+q")
+    q = keyboard.KeyCode(char="q", vk=113)
+    _tap(xk, SHIFT, META, q)
+    assert fired == ["overlay"]
+    captured = []
+    hk.begin_capture(captured.append)
+    _tap(xk, SHIFT, META, q)
+    assert captured == ["alt+shift+q"]
+
+
+@pytest.mark.skipif(keyboard is _Keyboard, reason="needs pynput's X11 listener")
+def test_pynput_still_has_the_method_that_hands_over_the_state():
+    # keygrab._Listener overrides a private pynput method to read X's state.
+    # Renamed, every key would arrive with no modifiers at all, silently.
+    assert "_handle_message" in vars(keyboard.Listener)
 
 
 def test_only_the_overlay_key_works_with_the_overlay_off():
@@ -197,18 +249,18 @@ def test_holding_a_media_key_toggles_once(monkeypatch):
     hk, xk, fired = _x11(media=True, play_pause="media_play_pause")
     hk.live = True
     play = keyboard.Key.media_play_pause
-    xk._press(play)
+    xk._press(play, 0)
     hk.press_media("media_play_pause")
     clock[0] += 0.5
     for _ in range(30):
-        xk._press(play)
+        xk._press(play, 0)
         hk.press_media("media_play_pause")
         clock[0] += 0.03
     xk._release(play)
     hk.press_media("media_play_pause")      # the last repeat's call, late
     assert fired == ["play_pause"]
     clock[0] += 0.3
-    xk._press(play)
+    xk._press(play, 0)
     hk.press_media("media_play_pause")
     assert fired == ["play_pause", "play_pause"]
 

@@ -15,6 +15,13 @@ inside such a game the key reaches the game too, as before.
 (keygrab_win.KeyHook): it names each key and calls `on_key(name, mods,
 repeat)`; hotkeys.py decides what the key means. The grabs are a no-op on
 other platforms and sessions; see `KeyGrabber.available`.
+
+The modifiers held are read from the X event itself (`MOD_MASKS`), the very
+mask a passive grab is matched against, so a key the grab takes is a key the
+listener names the same way. They used to be counted from the modifier keys'
+own presses and releases, and pynput names those by the level the *other*
+modifiers select: Alt let go while Shift was still down read as Meta_L, so
+Alt stayed "held" and every bare key became Alt+key -- taken, never fired.
 """
 
 import os
@@ -48,13 +55,13 @@ def wayland_session():
     kind = os.environ.get("XDG_SESSION_TYPE", "")
     return kind == "wayland" or (bool(os.environ.get("WAYLAND_DISPLAY")) and kind != "x11")
 
-MOD_NAMES = {
-    "ctrl": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
-    "alt": "alt", "alt_l": "alt", "alt_r": "alt",
-    "shift": "shift", "shift_l": "shift", "shift_r": "shift",
-    "cmd": "super", "cmd_l": "super", "cmd_r": "super",
-}
-MODS = frozenset(MOD_NAMES.values())
+# The modifiers a combo can name, as X's state masks (ShiftMask, ControlMask,
+# Mod1Mask, Mod4Mask): what a grab is made with and what the listener reads
+# back from each key event.
+MOD_MASKS = {"shift": 1 << 0, "ctrl": 1 << 2, "alt": 1 << 3, "super": 1 << 6}
+# The keysyms of the keys that hold them, at any level: Shift_L to Hyper_R
+# but Caps_Lock and Shift_Lock. With Shift down, the Alt key reads as Meta_L.
+MOD_KEYSYMS = frozenset(range(0xFFE1, 0xFFEF)) - {0xFFE5, 0xFFE6}
 # Media keys pynput has no name for, by vk: XF86AudioStop's keysym on X11,
 # VK_MEDIA_STOP on Windows. Neither stands for a key that types a character.
 MEDIA_VKS = {0x1008FF15: "media_stop", 0xB2: "media_stop"}
@@ -90,12 +97,24 @@ def keysym_for(key, hint=None):
     return XK.string_to_keysym(KEYSYM_NAMES.get(key, key))
 
 
+def is_modifier(key):
+    """A key that holds Shift, Ctrl, Alt or Super, whatever pynput read it as."""
+    if isinstance(key, keyboard.Key):
+        key = key.value
+    return getattr(key, "vk", None) in MOD_KEYSYMS
+
+
+def held(state):
+    """The modifiers an X key event says were down."""
+    return {name for name, mask in MOD_MASKS.items() if state & mask}
+
+
 def key_name(key, canonical=None):
     """pynput key -> our name, or None for keys we can't name."""
     if keyboard is None:
         return None
     if isinstance(key, keyboard.Key):
-        return MOD_NAMES.get(key.name, key.name)
+        return key.name
     if canonical is not None:
         key = canonical(key)
     char = getattr(key, "char", None)
@@ -119,6 +138,17 @@ def _safe(fn):
     return wrapper
 
 
+if keyboard is not None:
+    class _Listener(keyboard.Listener):
+        """pynput's listener, keeping the modifier state X sent with the key
+        it is reporting (`state`): pynput reads it, but never hands it on."""
+        state = 0
+
+        def _handle_message(self, display, event, injected):
+            self.state = event.state
+            super()._handle_message(display, event, injected)
+
+
 class XKeys:
     """The pynput listener and the grabber together: the X11 counterpart of
     keygrab_win.KeyHook, behind the same seam -- `on_key(name, mods, repeat)`
@@ -137,16 +167,16 @@ class XKeys:
         self.error = WAYLAND_ERROR if wayland_session() else IMPORT_ERROR
         self._combos = []
         self._listener = None
-        self._mods = set()
         self._down = {}         # key name -> when it was last pressed
 
     def start(self):
         if keyboard is None or self.error:
             return False
         try:
-            self._listener = keyboard.Listener(on_press=_safe(self._press),
-                                               on_release=_safe(self._release))
-            self._listener.start()
+            listener = self._listener = _Listener(
+                on_press=_safe(lambda key, *_: self._press(key, listener.state)),
+                on_release=_safe(self._release))
+            listener.start()
             self.grabber.start()
             self._grab()
         except Exception as e:
@@ -171,14 +201,15 @@ class XKeys:
 
     # listener thread ---------------------------------------------------------
     # pynput 1.8 calls back with (key, injected) when the callback can take
-    # two arguments -- and _safe's wrapper takes any number.
-    def _press(self, key, injected=False):
+    # two arguments -- and _safe's wrapper takes any number. A press is
+    # handed X's state in its place (see start).
+    def _press(self, key, state):
+        """A key went down; `state` is the X event's, the modifiers held."""
+        if is_modifier(key):
+            return
         canonical = self._listener.canonical if self._listener else None
         name = key_name(key, canonical)
         if name is None:
-            return
-        if name in MODS:
-            self._mods.add(name)
             return
         self._learn_keysym(name, key)
         # A held key repeats as bare presses, with no release in between (25
@@ -189,18 +220,16 @@ class XKeys:
         now = time.monotonic()
         repeat = now - self._down.get(name, 0) < REPEAT_GAP_S
         self._down[name] = now
-        self._on_key(name, set(self._mods), repeat)
+        self._on_key(name, held(state), repeat)
 
     def _release(self, key, injected=False):
-        name = key_name(key)
-        if name in MODS:
-            self._mods.discard(name)
+        if is_modifier(key):
             # A held key reports a different character once a modifier is
             # gone (Shift+K is Cyrillic k on a us,bg keymap, K without it),
             # so its release would not match its press. Forget what is held.
             self._down.clear()
         else:
-            self._down.pop(name, None)
+            self._down.pop(key_name(key), None)
 
     def _learn_keysym(self, name, key):
         """Remember which keysym a character came from, and re-grab if it is new.
@@ -267,14 +296,8 @@ class KeyGrabber:
 
     def _masks(self, mods):
         m = 0
-        if "ctrl" in mods:
-            m |= X.ControlMask
-        if "alt" in mods:
-            m |= X.Mod1Mask
-        if "shift" in mods:
-            m |= X.ShiftMask
-        if "super" in mods:
-            m |= X.Mod4Mask
+        for name in mods:
+            m |= MOD_MASKS[name]
         # A grab only matches the exact modifier state, and Caps Lock/Num Lock
         # count as modifiers -- grab every lock combination too.
         return {m, m | X.LockMask, m | X.Mod2Mask, m | X.LockMask | X.Mod2Mask}
