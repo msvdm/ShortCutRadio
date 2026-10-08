@@ -1,6 +1,9 @@
 ShortCutRadio is a radio and music player that lives in a corner of the
 screen, over games too, and that you drive with the keyboard.
 
+**New in 1.0.1:** on Linux, shortcuts no longer stop working after a
+shortcut with Alt and Shift (such as the overlay key) is let go Alt first.
+
 **Which file to take**
 
 - **Windows 10 or 11:** `ShortCutRadio-*-windows-x64-setup.exe` installs it
